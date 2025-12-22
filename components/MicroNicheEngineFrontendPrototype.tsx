@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -77,9 +77,10 @@ function short(s: string, max = 88) {
 }
 
 function keyForInstant(x: InstantProof) {
-    // Stable key for session lists
     return `${(x.meta?.lane ?? "Lane").trim()}::${x.microNiche.trim()}`;
 }
+
+const LS_SESSION_KEY = "mne_session_id";
 
 export default function MicroNicheEngineFrontendPrototype() {
     const [mode, setMode] = useState<"instant" | "deep">("instant");
@@ -95,7 +96,8 @@ export default function MicroNicheEngineFrontendPrototype() {
     const [deep, setDeep] = useState<DeepProof | null>(null);
 
     const [paidUnlocked, setPaidUnlocked] = useState(false);
-    const [simPayment, setSimPayment] = useState(true);
+    const [isUnlocking, setIsUnlocking] = useState(false);
+    const [isDeepLoading, setIsDeepLoading] = useState(false);
 
     // Session lists
     const [history, setHistory] = useState<InstantProof[]>([]);
@@ -120,7 +122,7 @@ export default function MicroNicheEngineFrontendPrototype() {
         const k = keyForInstant(res);
         setHistory((prev) => {
             if (prev.some((x) => keyForInstant(x) === k)) return prev;
-            return [res, ...prev].slice(0, 30); // cap
+            return [res, ...prev].slice(0, 30);
         });
     };
 
@@ -147,6 +149,32 @@ export default function MicroNicheEngineFrontendPrototype() {
         setSaved([]);
     };
 
+    // --- Stripe session capture + verify ---
+    useEffect(() => {
+        const params = new URLSearchParams(window.location.search);
+        const sessionId = params.get("session_id");
+        if (sessionId) {
+            localStorage.setItem(LS_SESSION_KEY, sessionId);
+        }
+    }, []);
+
+    useEffect(() => {
+        const sessionId = localStorage.getItem(LS_SESSION_KEY);
+        if (!sessionId) return;
+
+        // Verify paid (server-side with Stripe secret)
+        (async () => {
+            try {
+                const r = await fetch(`/api/stripe/verify-session?session_id=${encodeURIComponent(sessionId)}`);
+                const j = await r.json();
+                setPaidUnlocked(!!j?.paid);
+            } catch {
+                // If verification fails, keep locked. Deep route will still enforce 402.
+                setPaidUnlocked(false);
+            }
+        })();
+    }, []);
+
     const onGenerate = async () => {
         setIsGenerating(true);
         setDeep(null);
@@ -167,7 +195,6 @@ export default function MicroNicheEngineFrontendPrototype() {
                     avoidMicroNiches,
                 }),
             });
-            console.log("INSTANT fetch status:", res.status, "ok:", res.ok);
 
             if (!res.ok) {
                 const err = await res.json().catch(() => ({}));
@@ -177,6 +204,18 @@ export default function MicroNicheEngineFrontendPrototype() {
             const json = (await res.json()) as InstantProof;
             setInstant(json);
             addToHistory(json);
+
+            // If we have a valid paid session already, keep it unlocked
+            const sessionId = localStorage.getItem(LS_SESSION_KEY);
+            if (sessionId) {
+                try {
+                    const vr = await fetch(`/api/stripe/verify-session?session_id=${encodeURIComponent(sessionId)}`);
+                    const vj = await vr.json();
+                    setPaidUnlocked(!!vj?.paid);
+                } catch {
+                    setPaidUnlocked(false);
+                }
+            }
         } catch (e: any) {
             alert(`Instant generation failed: ${e?.message ?? "Unknown error"}`);
         } finally {
@@ -187,42 +226,55 @@ export default function MicroNicheEngineFrontendPrototype() {
     const onUnlockDeep = async () => {
         if (!instant) return;
 
-        if (!simPayment) {
-            setPaidUnlocked(false);
+        setIsUnlocking(true);
+        try {
+            const r = await fetch("/api/stripe/create-checkout-session", { method: "POST" });
+            const j = await r.json().catch(() => ({}));
+            if (!r.ok || !j?.url) throw new Error(j?.error || "Checkout session creation failed.");
+            window.location.href = j.url;
+        } catch (e: any) {
+            alert(`Checkout failed: ${e?.message ?? "Unknown error"}`);
+        } finally {
+            setIsUnlocking(false);
+        }
+    };
+
+    const onGenerateDeep = async () => {
+        if (!instant) return;
+
+        const sessionId = localStorage.getItem(LS_SESSION_KEY);
+        if (!sessionId) {
+            alert("No Stripe session found. Click Unlock Deep Proof first.");
             return;
         }
 
-        // This remains mocked until you add /api/generate/deep
-        setPaidUnlocked(true);
+        setIsDeepLoading(true);
+        try {
+            const r = await fetch("/api/generate/deep", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    sessionId,
+                    instant,
+                    notes,
+                }),
+            });
 
-        await new Promise((r) => setTimeout(r, 350));
-        setDeep({
-            whyExists:
-                "This niche exists because the buyer is forced to juggle too many signals with too little time. When volume crosses a small threshold, their process breaks—creating repeatable pain.",
-            proofSignals: [
-                "Repeated public complaints using consistent phrasing",
-                "DIY workarounds (spreadsheets, manual habits, tool stacking)",
-                "Paid attempts (tools, freelancers, ads, consultants)",
-                "Loss proximity (missed revenue, churn, time, risk)",
-            ],
-            underserved:
-                "Most solutions assume bigger teams or push heavy tooling. The gap is a lightweight, stage-appropriate fix without migration.",
-            stability:
-                "The durability driver is structural: workflow complexity grows faster than attention. This mismatch persists across tools.",
-            executionPath: [
-                "Day 1: Offer the audit where the pain is already discussed.",
-                "Day 2–3: Deliver a 5-point plan + single 'do first' priority.",
-                "Day 4–7: Capture before/after metric (time saved, response speed, fewer misses).",
-                "Day 8–10: Turn best step into a reusable checklist/template.",
-                "Day 11–14: Offer setup or monthly watch only after a measurable win.",
-            ],
-            expansionLater: ["Lightweight setup package", "Monthly watch/maintenance"],
-            riskCheck: [
-                { risk: "Niche too broad", mitigation: "Force named buyer + constraint; reject vague audiences." },
-                { risk: "Overpromising outcomes", mitigation: "Promise process metrics (time/speed/clarity), not revenue." },
-                { risk: "Tool complexity creep", mitigation: "Default to no migrations; use current tools first." },
-            ],
-        });
+            const j = await r.json().catch(() => ({}));
+            if (r.status === 402) {
+                setPaidUnlocked(false);
+                alert("Deep Proof is locked. Payment not verified for this session.");
+                return;
+            }
+            if (!r.ok) throw new Error(j?.error || `Deep Proof failed: ${r.status}`);
+
+            setDeep(j as DeepProof);
+            setPaidUnlocked(true);
+        } catch (e: any) {
+            alert(`Deep Proof failed: ${e?.message ?? "Unknown error"}`);
+        } finally {
+            setIsDeepLoading(false);
+        }
     };
 
     return (
@@ -274,7 +326,7 @@ export default function MicroNicheEngineFrontendPrototype() {
                                     </Button>
                                 </div>
                                 <p className="text-xs text-muted-foreground">
-                                    Deep Proof still generates Instant Proof first, then offers an optional unlock.
+                                    Deep Proof generates Instant Proof first, then offers an optional unlock.
                                 </p>
                             </div>
 
@@ -354,19 +406,6 @@ export default function MicroNicheEngineFrontendPrototype() {
                                 <Switch checked={avoidRepeats} onCheckedChange={setAvoidRepeats} />
                             </div>
 
-                            <div className="flex items-center justify-between gap-3">
-                                <div className="space-y-1">
-                                    <Label className="flex items-center gap-2">
-                                        Simulate payment
-                                        <Badge variant="secondary" className="rounded-full">
-                                            Prototype
-                                        </Badge>
-                                    </Label>
-                                    <p className="text-xs text-muted-foreground">Toggle off to see locked state.</p>
-                                </div>
-                                <Switch checked={simPayment} onCheckedChange={setSimPayment} />
-                            </div>
-
                             <Button className="w-full rounded-2xl" onClick={onGenerate} disabled={!userReady || isGenerating}>
                                 {isGenerating ? "Generating…" : "Generate"}
                                 <ChevronRight className="h-4 w-4 ml-2" />
@@ -374,11 +413,15 @@ export default function MicroNicheEngineFrontendPrototype() {
 
                             <div className="flex items-center justify-between">
                                 <div className="text-xs text-muted-foreground">
-                                    Session:{" "}
-                                    <span className="font-medium">{history.length}</span> generated /{" "}
+                                    Session: <span className="font-medium">{history.length}</span> generated /{" "}
                                     <span className="font-medium">{saved.length}</span> saved
                                 </div>
-                                <Button variant="outline" className="rounded-2xl" onClick={clearSession} disabled={!history.length && !saved.length}>
+                                <Button
+                                    variant="outline"
+                                    className="rounded-2xl"
+                                    onClick={clearSession}
+                                    disabled={!history.length && !saved.length}
+                                >
                                     Clear
                                 </Button>
                             </div>
@@ -455,9 +498,7 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                     );
                                                 })}
                                                 {history.length > 8 && (
-                                                    <div className="text-xs text-muted-foreground">
-                                                        Showing 8 of {history.length}. (Easy to expand later.)
-                                                    </div>
+                                                    <div className="text-xs text-muted-foreground">Showing 8 of {history.length}. (Easy to expand later.)</div>
                                                 )}
                                             </div>
                                         )}
@@ -497,21 +538,14 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                                 <Button variant="outline" className="rounded-2xl" onClick={() => useResult(s)}>
                                                                     Use
                                                                 </Button>
-                                                                <Button
-                                                                    variant="default"
-                                                                    className="rounded-2xl"
-                                                                    onClick={() => toggleSave(s)}
-                                                                    title="Unsave"
-                                                                >
+                                                                <Button variant="default" className="rounded-2xl" onClick={() => toggleSave(s)} title="Unsave">
                                                                     <Star className="h-4 w-4" />
                                                                 </Button>
                                                             </div>
                                                         </div>
                                                     );
                                                 })}
-                                                {saved.length > 8 && (
-                                                    <div className="text-xs text-muted-foreground">Showing 8 of {saved.length}.</div>
-                                                )}
+                                                {saved.length > 8 && <div className="text-xs text-muted-foreground">Showing 8 of {saved.length}.</div>}
                                             </div>
                                         )}
                                     </CardContent>
@@ -546,7 +580,7 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                 exit={{ opacity: 0, y: -10 }}
                                                 className="space-y-4"
                                             >
-                                                {/* RESULT: Micro-Niche (dominant) */}
+                                                {/* RESULT: Micro-Niche */}
                                                 <Card className="rounded-2xl border-2 bg-muted/30">
                                                     <CardHeader>
                                                         <div className="flex flex-wrap items-center gap-2 justify-between">
@@ -658,13 +692,13 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                     <CardContent className="text-sm">{instant.oneActionToday}</CardContent>
                                                 </Card>
 
-                                                {/* Upgrade */}
+                                                {/* Upgrade / Deep Proof */}
                                                 <Card className="rounded-2xl border-dashed">
                                                     <CardHeader className="flex flex-row items-center justify-between gap-3">
                                                         <div>
                                                             <CardTitle className="text-base">Want the proof?</CardTitle>
                                                             <p className="text-sm text-muted-foreground">
-                                                                You can act on this now. Deep Proof explains why it works and how to expand safely.
+                                                                Deep Proof explains why it works and how to expand safely.
                                                             </p>
                                                         </div>
                                                         <div className="flex items-center gap-2">
@@ -679,11 +713,19 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                             )}
                                                         </div>
                                                     </CardHeader>
+
                                                     <CardContent className="flex flex-col md:flex-row gap-3 md:items-center md:justify-between">
-                                                        <div className="text-sm text-muted-foreground">$29 one-time (prototype: simulated)</div>
-                                                        <Button className="rounded-2xl" onClick={onUnlockDeep} disabled={!instant || (!!deep && paidUnlocked)}>
-                                                            Unlock Deep Proof
-                                                        </Button>
+                                                        <div className="text-sm text-muted-foreground">$27 one-time (Stripe Checkout)</div>
+
+                                                        {!paidUnlocked ? (
+                                                            <Button className="rounded-2xl" onClick={onUnlockDeep} disabled={!instant || isUnlocking}>
+                                                                {isUnlocking ? "Opening checkout…" : "Unlock Deep Proof"}
+                                                            </Button>
+                                                        ) : (
+                                                            <Button className="rounded-2xl" onClick={onGenerateDeep} disabled={!instant || isDeepLoading}>
+                                                                {isDeepLoading ? "Generating Deep Proof…" : "Generate Deep Proof"}
+                                                            </Button>
+                                                        )}
                                                     </CardContent>
                                                 </Card>
 
@@ -697,7 +739,7 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                             className="rounded-2xl border p-4 text-sm text-muted-foreground"
                                                         >
                                                             You selected <span className="font-medium">Deep Proof</span>. Click{" "}
-                                                            <span className="font-medium">Unlock Deep Proof</span> to view the evidence and expansion plan.
+                                                            <span className="font-medium">Unlock Deep Proof</span> to pay and unlock.
                                                         </motion.div>
                                                     )}
                                                 </AnimatePresence>
@@ -853,30 +895,12 @@ export default function MicroNicheEngineFrontendPrototype() {
 
                                                 <Card className="rounded-2xl">
                                                     <CardHeader>
-                                                        <CardTitle className="text-base">Integration placeholders</CardTitle>
+                                                        <CardTitle className="text-base">Payments</CardTitle>
                                                     </CardHeader>
-                                                    <CardContent className="space-y-3 text-sm text-muted-foreground">
-                                                        <div>
-                                                            <div className="font-medium text-foreground">Instant Proof API</div>
-                                                            <div>
-                                                                POST <span className="font-mono">/api/generate/instant</span> → returns structured JSON
-                                                                (includes confidenceWhy, confidenceDrivers, confidenceRaise)
-                                                            </div>
-                                                        </div>
-                                                        <div>
-                                                            <div className="font-medium text-foreground">Deep Proof API</div>
-                                                            <div>
-                                                                POST <span className="font-mono">/api/generate/deep</span> (requires payment token) →
-                                                                returns sections (proof signals, stability, risks)
-                                                            </div>
-                                                        </div>
-                                                        <div>
-                                                            <div className="font-medium text-foreground">Payments</div>
-                                                            <div>
-                                                                Stripe Checkout → webhook sets <span className="font-mono">paidUnlocked=true</span> →
-                                                                enable Deep Proof generation.
-                                                            </div>
-                                                        </div>
+                                                    <CardContent className="space-y-2 text-sm text-muted-foreground">
+                                                        <div>Stripe session stored: {localStorage.getItem(LS_SESSION_KEY) ? "Yes" : "No"}</div>
+                                                        <div>Unlocked (verified): {paidUnlocked ? "Yes" : "No"}</div>
+                                                        <div>Deep Proof route still enforces a server-side 402 if unpaid.</div>
                                                     </CardContent>
                                                 </Card>
 
