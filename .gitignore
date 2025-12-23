@@ -44,3 +44,6 @@ next-env.d.ts
 # IDE
 .idea
 
+.open-next/
+.wrangler/
+node_modules/
