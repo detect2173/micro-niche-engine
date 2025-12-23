@@ -22,6 +22,7 @@ import {
     StarOff,
     History,
 } from "lucide-react";
+const asArray = <T,>(v: unknown): T[] => (Array.isArray(v) ? (v as T[]) : []);
 
 const lanes = [
     { id: "surprise", label: "Surprise me" },
@@ -76,9 +77,17 @@ function short(s: string, max = 88) {
     return s.length > max ? s.slice(0, max - 1) + "…" : s;
 }
 
-function keyForInstant(x: InstantProof) {
-    return `${(x.meta?.lane ?? "Lane").trim()}::${x.microNiche.trim()}`;
+function keyForInstant(x: any) {
+    const lane = String(x?.meta?.lane ?? x?.lane ?? "Lane").trim();
+    const micro = String(
+        x?.microNiche ??
+        x?.micro_niche ??
+        x?.name ?? // <-- your current API objects use "name"
+        "Unknown"
+    ).trim();
+    return `${lane}::${micro}`;
 }
+
 
 const LS_SESSION_KEY = "mne_session_id";
 
@@ -666,8 +675,10 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                             <CardTitle className="text-base">First Service to Offer</CardTitle>
                                                         </CardHeader>
                                                         <CardContent className="space-y-2">
-                                                            <div className="text-sm font-medium">{instant.firstService.name}</div>
-                                                            <div className="text-sm text-muted-foreground">{instant.firstService.outcome}</div>
+                                                            <div className="text-sm font-medium">{instant?.firstService?.name ?? "—"}
+                                                            </div>
+                                                            <div className="text-sm text-muted-foreground">{instant?.firstService?.name ?? "—"}
+                                                            </div>
                                                         </CardContent>
                                                     </Card>
                                                 </div>
@@ -678,9 +689,11 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                     </CardHeader>
                                                     <CardContent>
                                                         <ul className="list-disc pl-5 text-sm space-y-1">
-                                                            {instant.buyerPlaces.map((p, i) => (
+                                                            {(instant?.buyerPlaces ?? []).map((p, i) => (
                                                                 <li key={i}>{p}</li>
                                                             ))}
+
+
                                                         </ul>
                                                     </CardContent>
                                                 </Card>
@@ -884,11 +897,12 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                     </CardHeader>
                                                     <CardContent>
                                                         <div className="flex flex-wrap gap-2">
-                                                            {(instant.meta?.gatesPassed ?? []).map((g, i) => (
+                                                            {(instant?.meta?.gatesPassed ?? []).map((g: string, i: number) => (
                                                                 <Badge key={i} variant="secondary" className="rounded-full">
                                                                     {g}
                                                                 </Badge>
                                                             ))}
+
                                                         </div>
                                                     </CardContent>
                                                 </Card>
