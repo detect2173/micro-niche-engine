@@ -1,7 +1,16 @@
 import { cacheGetOrSet } from "@/lib/mne/cache";
 import { sha256Hex } from "@/lib/mne/hash";
 
-// ...inside POST:
+// inside POST:
+const body = (await req.json().catch(() => ({}))) as any;
+
+const {
+    lane = "",
+    notes = "",
+    level = "standard",
+    avoidMicroNiches = [],
+} = body;
+
 const rawKey = JSON.stringify({ lane, notes, level, avoidMicroNiches });
 const key = `instant:${await sha256Hex(rawKey)}`;
 
