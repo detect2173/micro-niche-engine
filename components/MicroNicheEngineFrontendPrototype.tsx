@@ -90,6 +90,7 @@ function keyForInstant(x: any) {
 
 
 const LS_SESSION_KEY = "mne_session_id";
+const DEV_MODE = process.env.NEXT_PUBLIC_DEV_MODE === "true";
 
 export default function MicroNicheEngineFrontendPrototype() {
     const [mode, setMode] = useState<"instant" | "deep">("instant");
@@ -112,6 +113,8 @@ export default function MicroNicheEngineFrontendPrototype() {
     const [history, setHistory] = useState<InstantProof[]>([]);
     const [saved, setSaved] = useState<InstantProof[]>([]);
     const [avoidRepeats, setAvoidRepeats] = useState(true);
+    const deepSectionRef = React.useRef<HTMLDivElement | null>(null);
+
 
     const userReady = useMemo(() => true, []);
 
@@ -183,6 +186,9 @@ export default function MicroNicheEngineFrontendPrototype() {
             }
         })();
     }, []);
+    useEffect(() => {
+        if (!DEV_MODE) setPerspective("user");
+    }, []);
 
     const onGenerate = async () => {
         setIsGenerating(true);
@@ -213,6 +219,13 @@ export default function MicroNicheEngineFrontendPrototype() {
             const json = (await res.json()) as InstantProof;
             setInstant(json);
             addToHistory(json);
+            // If user selected Full Validation, guide them to the next step after Instant is shown
+            if (mode === "deep") {
+                setTimeout(() => {
+                    deepSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+                }, 150);
+            }
+
 
             // If we have a valid paid session already, keep it unlocked
             const sessionId = localStorage.getItem(LS_SESSION_KEY);
@@ -291,19 +304,24 @@ export default function MicroNicheEngineFrontendPrototype() {
             <div className="mx-auto max-w-6xl px-4 py-10">
                 <header className="flex flex-col gap-3">
                     <div className="flex items-center gap-2">
-                        <Badge variant="secondary" className="rounded-full">
-                            Prototype
-                        </Badge>
+                        {DEV_MODE && (
+                            <Badge variant="secondary" className="rounded-full">
+                                Prototype
+                            </Badge>
+                        )}
                         <Badge variant="outline" className="rounded-full">
-                            Solo founders / side-hustlers
+                            Built for solo founders
                         </Badge>
                     </div>
+
                     <h1 className="text-3xl md:text-4xl font-semibold tracking-tight">
-                        Find a real micro-niche you can actually make money serving.
+                        Find a profitable micro-niche you can start serving this week.
                     </h1>
+
                     <p className="text-muted-foreground max-w-2xl">
-                        One-click value. The AI stays invisible. Instant Proof is free; Deep Proof shows the evidence and safer expansion paths.
+                        One click. No prompts. No hype. Get a realistic niche, the first service to offer, and where to find buyers — instantly.
                     </p>
+
                 </header>
 
                 <div className="mt-8 grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -311,36 +329,38 @@ export default function MicroNicheEngineFrontendPrototype() {
                     <Card className="rounded-2xl shadow-sm">
                         <CardHeader>
                             <CardTitle className="text-lg flex items-center gap-2">
-                                <Wand2 className="h-5 w-5" /> Inputs
+                                <Wand2 className="h-5 w-5" /> Your Setup
                             </CardTitle>
+
                         </CardHeader>
 
                         <CardContent className="space-y-5">
                             <div className="space-y-2">
-                                <Label>Result depth</Label>
+                                <Label>What do you want?</Label>
                                 <div className="grid grid-cols-2 gap-2">
                                     <Button
                                         variant={mode === "instant" ? "default" : "outline"}
                                         className="rounded-2xl justify-start"
                                         onClick={() => setMode("instant")}
                                     >
-                                        <Sparkles className="h-4 w-4 mr-2" /> Instant Proof
+                                        <Sparkles className="h-4 w-4 mr-2" /> Free Instant Result
                                     </Button>
                                     <Button
                                         variant={mode === "deep" ? "default" : "outline"}
                                         className="rounded-2xl justify-start"
                                         onClick={() => setMode("deep")}
                                     >
-                                        <ShieldCheck className="h-4 w-4 mr-2" /> Deep Proof
+                                        <ShieldCheck className="h-4 w-4 mr-2" /> Full Validation
                                     </Button>
                                 </div>
                                 <p className="text-xs text-muted-foreground">
-                                    Deep Proof generates Instant Proof first, then offers an optional unlock.
+                                    You’ll see the instant result first. Validation is an optional upgrade.
                                 </p>
+
                             </div>
 
                             <div className="space-y-2">
-                                <Label>Lane</Label>
+                                <Label>Industry</Label>
                                 <Select value={laneId} onValueChange={setLaneId}>
                                     <SelectTrigger className="rounded-2xl">
                                         <SelectValue placeholder="Choose a lane" />
@@ -357,7 +377,7 @@ export default function MicroNicheEngineFrontendPrototype() {
 
                             <div className="grid grid-cols-2 gap-3">
                                 <div className="space-y-2">
-                                    <Label>Time</Label>
+                                    <Label>Time you can commit</Label>
                                     <Select value={timeId} onValueChange={setTimeId}>
                                         <SelectTrigger className="rounded-2xl">
                                             <SelectValue placeholder="Time" />
@@ -390,14 +410,14 @@ export default function MicroNicheEngineFrontendPrototype() {
                             </div>
 
                             <div className="space-y-2">
-                                <Label>Optional note (constraints / familiarity)</Label>
+                                <Label>Anything we should know? (optional)</Label>
                                 <Textarea
                                     className="rounded-2xl"
                                     placeholder="e.g., 'I hate outreach' or 'I can do Notion + spreadsheets'"
                                     value={notes}
                                     onChange={(e) => setNotes(e.target.value)}
                                 />
-                                <p className="text-xs text-muted-foreground">Optional. Users can run with near-zero input.</p>
+                                <p className="text-xs text-muted-foreground">Optional. Leave blank if you want.</p>
                             </div>
 
                             <Separator />
@@ -405,18 +425,16 @@ export default function MicroNicheEngineFrontendPrototype() {
                             <div className="flex items-center justify-between gap-3">
                                 <div className="space-y-1">
                                     <Label className="flex items-center gap-2">
-                                        Avoid repeats (session)
-                                        <Badge variant="secondary" className="rounded-full">
-                                            Default
-                                        </Badge>
+                                        Avoid showing the same idea twice
                                     </Label>
-                                    <p className="text-xs text-muted-foreground">Sends an avoid list from this session’s history.</p>
+                                    <p className="text-xs text-muted-foreground">Helps keep results fresh while you explore.</p>
+
                                 </div>
                                 <Switch checked={avoidRepeats} onCheckedChange={setAvoidRepeats} />
                             </div>
 
                             <Button className="w-full rounded-2xl" onClick={onGenerate} disabled={!userReady || isGenerating}>
-                                {isGenerating ? "Generating…" : "Generate"}
+                                {isGenerating ? "Finding your niche…" : "Find My Micro-Niche"}
                                 <ChevronRight className="h-4 w-4 ml-2" />
                             </Button>
 
@@ -441,25 +459,33 @@ export default function MicroNicheEngineFrontendPrototype() {
                     <Card className="rounded-2xl shadow-sm lg:col-span-2">
                         <CardHeader className="flex flex-row items-center justify-between gap-3">
                             <div>
-                                <CardTitle className="text-lg">Preview</CardTitle>
-                                <p className="text-sm text-muted-foreground">Test how an end user experiences the result.</p>
+                                <CardTitle className="text-lg">Your Result</CardTitle>
+                                <p className="text-sm text-muted-foreground">A practical niche you could realistically monetize.</p>
                             </div>
 
-                            <Tabs value={perspective} onValueChange={(v) => setPerspective(v as "user" | "builder")} className="w-auto">
-                                <TabsList className="rounded-2xl">
-                                    <TabsTrigger value="user" className="rounded-2xl">
-                                        User
-                                    </TabsTrigger>
-                                    <TabsTrigger value="builder" className="rounded-2xl">
-                                        Builder / QA
-                                    </TabsTrigger>
-                                </TabsList>
-                            </Tabs>
+                            {DEV_MODE ? (
+                                <Tabs
+                                    value={perspective}
+                                    onValueChange={(v) => setPerspective(v as "user" | "builder")}
+                                    className="w-auto"
+                                >
+                                    <TabsList className="rounded-2xl">
+                                        <TabsTrigger value="user" className="rounded-2xl">
+                                            User
+                                        </TabsTrigger>
+                                        <TabsTrigger value="builder" className="rounded-2xl">
+                                            Builder / QA
+                                        </TabsTrigger>
+                                    </TabsList>
+                                </Tabs>
+                            ) : null}
+
                         </CardHeader>
 
                         <CardContent>
                             {/* History/Saved panels */}
-                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+                            {DEV_MODE ? (
+                                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
                                 <Card className="rounded-2xl">
                                     <CardHeader className="pb-3">
                                         <CardTitle className="text-base flex items-center gap-2">
@@ -498,7 +524,7 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                                     variant={isHsaved ? "default" : "outline"}
                                                                     className="rounded-2xl"
                                                                     onClick={() => toggleSave(h)}
-                                                                    title={isHsaved ? "Unsave" : "Save"}
+                                                                    title={isHsaved ? "Remove" : "Star"}
                                                                 >
                                                                     {isHsaved ? <Star className="h-4 w-4" /> : <StarOff className="h-4 w-4" />}
                                                                 </Button>
@@ -507,7 +533,7 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                     );
                                                 })}
                                                 {history.length > 8 && (
-                                                    <div className="text-xs text-muted-foreground">Showing 8 of {history.length}. (Easy to expand later.)</div>
+                                                    <div className="text-xs text-muted-foreground">Showing 8 of {history.length}. </div>
                                                 )}
                                             </div>
                                         )}
@@ -560,6 +586,7 @@ export default function MicroNicheEngineFrontendPrototype() {
                                     </CardContent>
                                 </Card>
                             </div>
+                            ) : null}
 
                             <Tabs value={perspective}>
                                 {/* USER VIEW */}
@@ -574,11 +601,11 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                 className="rounded-2xl border p-6 text-center"
                                             >
                                                 <div className="mx-auto max-w-md space-y-2">
-                                                    <p className="text-sm text-muted-foreground">No result yet.</p>
+                                                    <p className="text-sm text-muted-foreground">You’re one click away.</p>
                                                     <p className="text-base">
-                                                        Choose a lane (or <span className="font-medium">Surprise me</span>) and click{" "}
-                                                        <span className="font-medium">Generate</span>.
+                                                        Choose an industry — or let us surprise you — then click <span className="font-medium">Find My Micro-Niche</span>.
                                                     </p>
+
                                                 </div>
                                             </motion.div>
                                         ) : (
@@ -600,20 +627,34 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                                 </Badge>
                                                             </div>
 
-                                                            <Button
-                                                                variant={isSaved ? "default" : "outline"}
-                                                                className="rounded-2xl"
-                                                                onClick={() => toggleSave(instant)}
-                                                                title={isSaved ? "Unsave" : "Save"}
-                                                            >
-                                                                {isSaved ? <Star className="h-4 w-4 mr-2" /> : <StarOff className="h-4 w-4 mr-2" />}
-                                                                {isSaved ? "Saved" : "Save"}
-                                                            </Button>
+                                                            <div className="flex items-center gap-2">
+                                                                <Button
+                                                                    variant="outline"
+                                                                    className="rounded-2xl"
+                                                                    onClick={onGenerate}
+                                                                    disabled={isGenerating}
+                                                                    title="Try another"
+                                                                >
+                                                                    Try another
+                                                                </Button>
+
+                                                                <Button
+                                                                    variant={isSaved ? "default" : "outline"}
+                                                                    className="rounded-2xl"
+                                                                    onClick={() => toggleSave(instant)}
+                                                                    title={isSaved ? "Remove" : "Star"}
+                                                                >
+                                                                    {isSaved ? <Star className="h-4 w-4 mr-2" /> : <StarOff className="h-4 w-4 mr-2" />}
+                                                                    {isSaved ? "Starred" : "Star"}
+                                                                </Button>
+                                                            </div>
+
                                                         </div>
 
                                                         <CardTitle className="text-base mt-2">Your Micro-Niche</CardTitle>
                                                     </CardHeader>
-                                                    <CardContent className="text-sm leading-relaxed">{instant.microNiche}</CardContent>
+                                                    <CardContent className="text-base leading-relaxed">{instant.microNiche}</CardContent>
+
                                                 </Card>
 
                                                 {/* CONFIDENCE PANEL */}
@@ -667,7 +708,10 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                         <CardHeader>
                                                             <CardTitle className="text-base">Core Problem</CardTitle>
                                                         </CardHeader>
-                                                        <CardContent className="text-sm leading-relaxed">{instant.coreProblem}</CardContent>
+                                                        <CardContent className="text-sm leading-relaxed">
+                                                            {instant.coreProblem?.trim() ? instant.coreProblem : "No clear problem returned — click “Try another”."}
+                                                        </CardContent>
+
                                                     </Card>
 
                                                     <Card className="rounded-2xl">
@@ -677,7 +721,7 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                         <CardContent className="space-y-2">
                                                             <div className="text-sm font-medium">{instant?.firstService?.name ?? "—"}
                                                             </div>
-                                                            <div className="text-sm text-muted-foreground">{instant?.firstService?.name ?? "—"}
+                                                            <div className="text-sm text-muted-foreground">{instant?.firstService?.outcome ?? "—"}
                                                             </div>
                                                         </CardContent>
                                                     </Card>
@@ -689,12 +733,13 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                     </CardHeader>
                                                     <CardContent>
                                                         <ul className="list-disc pl-5 text-sm space-y-1">
-                                                            {(instant?.buyerPlaces ?? []).map((p, i) => (
-                                                                <li key={i}>{p}</li>
-                                                            ))}
-
-
+                                                            {(instant?.buyerPlaces ?? []).length ? (
+                                                                (instant.buyerPlaces ?? []).map((p, i) => <li key={i}>{p}</li>)
+                                                            ) : (
+                                                                <li className="text-muted-foreground">No buyer locations returned — click “Try another”.</li>
+                                                            )}
                                                         </ul>
+
                                                     </CardContent>
                                                 </Card>
 
@@ -705,13 +750,14 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                     <CardContent className="text-sm">{instant.oneActionToday}</CardContent>
                                                 </Card>
 
-                                                {/* Upgrade / Deep Proof */}
-                                                <Card className="rounded-2xl border-dashed">
+                                                {/* Upgrade / Deep Proof */}{/* Upgrade / Deep Proof */}
+                                                <div ref={deepSectionRef}>
+                                                    <Card className="rounded-2xl border-dashed">
                                                     <CardHeader className="flex flex-row items-center justify-between gap-3">
                                                         <div>
-                                                            <CardTitle className="text-base">Want the proof?</CardTitle>
+                                                            <CardTitle className="text-base">Want the full validation?</CardTitle>
                                                             <p className="text-sm text-muted-foreground">
-                                                                Deep Proof explains why it works and how to expand safely.
+                                                                See the evidence, risks, and safer expansion paths before you commit.
                                                             </p>
                                                         </div>
                                                         <div className="flex items-center gap-2">
@@ -728,20 +774,20 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                     </CardHeader>
 
                                                     <CardContent className="flex flex-col md:flex-row gap-3 md:items-center md:justify-between">
-                                                        <div className="text-sm text-muted-foreground">$27 one-time (Stripe Checkout)</div>
+                                                        <div className="text-sm text-muted-foreground">One-time unlock — $27</div>
 
                                                         {!paidUnlocked ? (
                                                             <Button className="rounded-2xl" onClick={onUnlockDeep} disabled={!instant || isUnlocking}>
-                                                                {isUnlocking ? "Opening checkout…" : "Unlock Deep Proof"}
+                                                                {isUnlocking ? "Opening secure checkout…" : "Unlock Full Validation"}
                                                             </Button>
                                                         ) : (
                                                             <Button className="rounded-2xl" onClick={onGenerateDeep} disabled={!instant || isDeepLoading}>
-                                                                {isDeepLoading ? "Generating Deep Proof…" : "Generate Deep Proof"}
+                                                                {isDeepLoading ? "Running validation…" : "Run Full Validation"}
                                                             </Button>
                                                         )}
                                                     </CardContent>
                                                 </Card>
-
+                                                </div>
                                                 <AnimatePresence mode="wait">
                                                     {mode === "deep" && !paidUnlocked && (
                                                         <motion.div
@@ -887,7 +933,7 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                         <div className="text-sm text-muted-foreground">{confidenceLabel}</div>
                                                     </div>
                                                     <Badge variant="outline" className="rounded-full">
-                                                        Conservative mode
+                                                        Conservative scoring
                                                     </Badge>
                                                 </div>
 
@@ -914,7 +960,8 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                     <CardContent className="space-y-2 text-sm text-muted-foreground">
                                                         <div>Stripe session stored: {localStorage.getItem(LS_SESSION_KEY) ? "Yes" : "No"}</div>
                                                         <div>Unlocked (verified): {paidUnlocked ? "Yes" : "No"}</div>
-                                                        <div>Deep Proof route still enforces a server-side 402 if unpaid.</div>
+                                                        <div>DValidation access is enforced securely on the server.
+                                                        </div>
                                                     </CardContent>
                                                 </Card>
 
@@ -963,9 +1010,12 @@ export default function MicroNicheEngineFrontendPrototype() {
                     </Card>
                 </div>
 
-                <footer className="mt-10 text-xs text-muted-foreground">
-                    Tip: History/Saved are session-only right now. Next step can be persisting them to localStorage.
-                </footer>
+                {DEV_MODE ? (
+                    <footer className="mt-10 text-xs text-muted-foreground">
+                        Tip: History/Saved are session-only right now. Next step can be persisting them to localStorage.
+                    </footer>
+                ) : null}
+
             </div>
         </div>
     );
