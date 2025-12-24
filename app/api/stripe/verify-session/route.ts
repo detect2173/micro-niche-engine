@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
-export const runtime = "edge";
+export const runtime = "nodejs";
+
 
 function mustEnv(name: string) {
   const v = process.env[name];

@@ -21,8 +21,8 @@ import {
     Star,
     StarOff,
     History,
+    Loader2,
 } from "lucide-react";
-const asArray = <T,>(v: unknown): T[] => (Array.isArray(v) ? (v as T[]) : []);
 
 const lanes = [
     { id: "surprise", label: "Surprise me" },
@@ -79,17 +79,17 @@ function short(s: string, max = 88) {
 
 function keyForInstant(x: any) {
     const lane = String(x?.meta?.lane ?? x?.lane ?? "Lane").trim();
-    const micro = String(
-        x?.microNiche ??
-        x?.micro_niche ??
-        x?.name ?? // <-- your current API objects use "name"
-        "Unknown"
-    ).trim();
+    const micro = String(x?.microNiche ?? x?.micro_niche ?? x?.name ?? "Unknown").trim();
     return `${lane}::${micro}`;
 }
 
-
 const LS_SESSION_KEY = "mne_session_id";
+
+// persistence keys
+const LS_HISTORY_KEY = "mne_history_v1";
+const LS_SAVED_KEY = "mne_saved_v1";
+const LS_AVOID_KEY = "mne_avoidRepeats_v1";
+
 const DEV_MODE = process.env.NEXT_PUBLIC_DEV_MODE === "true";
 
 export default function MicroNicheEngineFrontendPrototype() {
@@ -109,20 +109,61 @@ export default function MicroNicheEngineFrontendPrototype() {
     const [isUnlocking, setIsUnlocking] = useState(false);
     const [isDeepLoading, setIsDeepLoading] = useState(false);
 
-    // Session lists
+    // persisted lists
     const [history, setHistory] = useState<InstantProof[]>([]);
     const [saved, setSaved] = useState<InstantProof[]>([]);
     const [avoidRepeats, setAvoidRepeats] = useState(true);
+
     const deepSectionRef = React.useRef<HTMLDivElement | null>(null);
 
-
     const userReady = useMemo(() => true, []);
-
     const confidenceLabel: Confidence = instant?.meta?.confidence ?? "Medium";
     const confidenceWhy =
         instant?.meta?.confidenceWhy ?? "Rating is based on buyer clarity, money proximity, and evidence strength.";
     const confidenceDrivers = instant?.meta?.confidenceDrivers ?? [];
     const confidenceRaise = instant?.meta?.confidenceRaise ?? [];
+
+    // ---- Restore persisted state on first load ----
+    useEffect(() => {
+        try {
+            const rawH = localStorage.getItem(LS_HISTORY_KEY);
+            const rawS = localStorage.getItem(LS_SAVED_KEY);
+            const rawA = localStorage.getItem(LS_AVOID_KEY);
+
+            if (rawH) {
+                const parsed = JSON.parse(rawH);
+                if (Array.isArray(parsed)) setHistory(parsed.slice(0, 30));
+            }
+            if (rawS) {
+                const parsed = JSON.parse(rawS);
+                if (Array.isArray(parsed)) setSaved(parsed.slice(0, 30));
+            }
+            if (rawA) {
+                setAvoidRepeats(rawA === "true");
+            }
+        } catch {
+            // ignore
+        }
+    }, []);
+
+    // ---- Persist whenever they change ----
+    useEffect(() => {
+        try {
+            localStorage.setItem(LS_HISTORY_KEY, JSON.stringify(history.slice(0, 30)));
+        } catch {}
+    }, [history]);
+
+    useEffect(() => {
+        try {
+            localStorage.setItem(LS_SAVED_KEY, JSON.stringify(saved.slice(0, 30)));
+        } catch {}
+    }, [saved]);
+
+    useEffect(() => {
+        try {
+            localStorage.setItem(LS_AVOID_KEY, String(avoidRepeats));
+        } catch {}
+    }, [avoidRepeats]);
 
     const isSaved = useMemo(() => {
         if (!instant) return false;
@@ -159,6 +200,8 @@ export default function MicroNicheEngineFrontendPrototype() {
     const clearSession = () => {
         setHistory([]);
         setSaved([]);
+        setInstant(null);
+        setDeep(null);
     };
 
     // --- Stripe session capture + verify ---
@@ -174,18 +217,17 @@ export default function MicroNicheEngineFrontendPrototype() {
         const sessionId = localStorage.getItem(LS_SESSION_KEY);
         if (!sessionId) return;
 
-        // Verify paid (server-side with Stripe secret)
         (async () => {
             try {
                 const r = await fetch(`/api/stripe/verify-session?session_id=${encodeURIComponent(sessionId)}`);
                 const j = await r.json();
                 setPaidUnlocked(!!j?.paid);
             } catch {
-                // If verification fails, keep locked. Deep route will still enforce 402.
                 setPaidUnlocked(false);
             }
         })();
     }, []);
+
     useEffect(() => {
         if (!DEV_MODE) setPerspective("user");
     }, []);
@@ -219,15 +261,13 @@ export default function MicroNicheEngineFrontendPrototype() {
             const json = (await res.json()) as InstantProof;
             setInstant(json);
             addToHistory(json);
-            // If user selected Full Validation, guide them to the next step after Instant is shown
+
             if (mode === "deep") {
                 setTimeout(() => {
                     deepSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
                 }, 150);
             }
 
-
-            // If we have a valid paid session already, keep it unlocked
             const sessionId = localStorage.getItem(LS_SESSION_KEY);
             if (sessionId) {
                 try {
@@ -266,7 +306,7 @@ export default function MicroNicheEngineFrontendPrototype() {
 
         const sessionId = localStorage.getItem(LS_SESSION_KEY);
         if (!sessionId) {
-            alert("No Stripe session found. Click Unlock Deep Proof first.");
+            alert("No Stripe session found. Click Unlock Full Validation first.");
             return;
         }
 
@@ -285,15 +325,15 @@ export default function MicroNicheEngineFrontendPrototype() {
             const j = await r.json().catch(() => ({}));
             if (r.status === 402) {
                 setPaidUnlocked(false);
-                alert("Deep Proof is locked. Payment not verified for this session.");
+                alert("Full Validation is locked. Payment not verified for this session.");
                 return;
             }
-            if (!r.ok) throw new Error(j?.error || `Deep Proof failed: ${r.status}`);
+            if (!r.ok) throw new Error(j?.error || `Full Validation failed: ${r.status}`);
 
             setDeep(j as DeepProof);
             setPaidUnlocked(true);
         } catch (e: any) {
-            alert(`Deep Proof failed: ${e?.message ?? "Unknown error"}`);
+            alert(`Full Validation failed: ${e?.message ?? "Unknown error"}`);
         } finally {
             setIsDeepLoading(false);
         }
@@ -321,7 +361,6 @@ export default function MicroNicheEngineFrontendPrototype() {
                     <p className="text-muted-foreground max-w-2xl">
                         One click. No prompts. No hype. Get a realistic niche, the first service to offer, and where to find buyers — instantly.
                     </p>
-
                 </header>
 
                 <div className="mt-8 grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -331,46 +370,37 @@ export default function MicroNicheEngineFrontendPrototype() {
                             <CardTitle className="text-lg flex items-center gap-2">
                                 <Wand2 className="h-5 w-5" /> Your Setup
                             </CardTitle>
-
                         </CardHeader>
 
                         <CardContent className="space-y-5">
                             <div className="space-y-2">
                                 <Label>What do you want?</Label>
                                 <div className="grid grid-cols-2 gap-2 items-stretch">
-                                <Button
+                                    <Button
                                         variant={mode === "instant" ? "default" : "outline"}
                                         className="rounded-2xl h-full min-h-[48px] flex items-center justify-center gap-2 px-3 py-2 text-center whitespace-normal leading-snug"
-
-
                                         onClick={() => setMode("instant")}
                                     >
                                         <Sparkles className="h-4 w-4 shrink-0" />
+                                        <span className="flex flex-col items-center leading-tight">
+                      <span>Free Instant Result</span>
+                      <span className="text-[10px] opacity-50 tracking-wide">Recommended</span>
+                    </span>
+                                    </Button>
 
-                                    <span className="flex flex-col items-center leading-tight">
-  <span>Free Instant Result</span>
-  <span className="text-[10px] opacity-50 tracking-wide">Recommended</span>
-
-</span>
-
-                                </Button>
                                     <Button
                                         variant={mode === "deep" ? "default" : "outline"}
                                         className="rounded-2xl h-full min-h-[48px] flex items-center justify-center gap-2 px-3 py-2 text-center whitespace-normal leading-snug"
-
                                         onClick={() => setMode("deep")}
                                     >
                                         <ShieldCheck className="h-4 w-4 shrink-0" />
-
                                         <span className="block">Full Validation</span>
                                     </Button>
-
-
                                 </div>
+
                                 <p className="text-xs text-muted-foreground">
                                     You’ll see the instant result first. Validation is an optional upgrade.
                                 </p>
-
                             </div>
 
                             <div className="space-y-2">
@@ -438,18 +468,23 @@ export default function MicroNicheEngineFrontendPrototype() {
 
                             <div className="flex items-center justify-between gap-3">
                                 <div className="space-y-1">
-                                    <Label className="flex items-center gap-2">
-                                        Avoid showing the same idea twice
-                                    </Label>
+                                    <Label className="flex items-center gap-2">Avoid showing the same idea twice</Label>
                                     <p className="text-xs text-muted-foreground">Helps keep results fresh while you explore.</p>
-
                                 </div>
                                 <Switch checked={avoidRepeats} onCheckedChange={setAvoidRepeats} />
                             </div>
 
                             <Button className="w-full rounded-2xl" onClick={onGenerate} disabled={!userReady || isGenerating}>
-                                {isGenerating ? "Finding your niche…" : "Find My Micro-Niche"}
-                                <ChevronRight className="h-4 w-4 ml-2" />
+                                {isGenerating ? (
+                                    <span className="flex items-center gap-2">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Finding your niche…
+                  </span>
+                                ) : (
+                                    <span className="flex items-center">
+                    Find My Micro-Niche <ChevronRight className="h-4 w-4 ml-2" />
+                  </span>
+                                )}
                             </Button>
 
                             <div className="flex items-center justify-between">
@@ -461,7 +496,7 @@ export default function MicroNicheEngineFrontendPrototype() {
                                     variant="outline"
                                     className="rounded-2xl"
                                     onClick={clearSession}
-                                    disabled={!history.length && !saved.length}
+                                    disabled={!history.length && !saved.length && !instant}
                                 >
                                     Clear
                                 </Button>
@@ -478,11 +513,7 @@ export default function MicroNicheEngineFrontendPrototype() {
                             </div>
 
                             {DEV_MODE ? (
-                                <Tabs
-                                    value={perspective}
-                                    onValueChange={(v) => setPerspective(v as "user" | "builder")}
-                                    className="w-auto"
-                                >
+                                <Tabs value={perspective} onValueChange={(v) => setPerspective(v as "user" | "builder")} className="w-auto">
                                     <TabsList className="rounded-2xl">
                                         <TabsTrigger value="user" className="rounded-2xl">
                                             User
@@ -493,17 +524,15 @@ export default function MicroNicheEngineFrontendPrototype() {
                                     </TabsList>
                                 </Tabs>
                             ) : null}
-
                         </CardHeader>
 
                         <CardContent>
-                            {/* History/Saved panels */}
-                            {DEV_MODE ? (
-                                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+                            {/* History/Saved panels (NOW ALWAYS VISIBLE + PERSISTED) */}
+                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
                                 <Card className="rounded-2xl">
                                     <CardHeader className="pb-3">
                                         <CardTitle className="text-base flex items-center gap-2">
-                                            <History className="h-4 w-4" /> History (session)
+                                            <History className="h-4 w-4" /> History
                                             <Badge variant="secondary" className="rounded-full">
                                                 {history.length}
                                             </Badge>
@@ -546,9 +575,7 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                         </div>
                                                     );
                                                 })}
-                                                {history.length > 8 && (
-                                                    <div className="text-xs text-muted-foreground">Showing 8 of {history.length}. </div>
-                                                )}
+                                                {history.length > 8 && <div className="text-xs text-muted-foreground">Showing 8 of {history.length}.</div>}
                                             </div>
                                         )}
                                     </CardContent>
@@ -600,7 +627,6 @@ export default function MicroNicheEngineFrontendPrototype() {
                                     </CardContent>
                                 </Card>
                             </div>
-                            ) : null}
 
                             <Tabs value={perspective}>
                                 {/* USER VIEW */}
@@ -629,7 +655,6 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                     </ul>
                                                 </div>
                                             </motion.div>
-
                                         ) : (
                                             <motion.div
                                                 key="result"
@@ -638,7 +663,6 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                 exit={{ opacity: 0, y: -10 }}
                                                 className="space-y-4"
                                             >
-                                                {/* RESULT: Micro-Niche */}
                                                 <Card className="rounded-2xl border-2 bg-muted/30">
                                                     <CardHeader>
                                                         <div className="flex flex-wrap items-center gap-2 justify-between">
@@ -670,16 +694,13 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                                     {isSaved ? "Starred" : "Star"}
                                                                 </Button>
                                                             </div>
-
                                                         </div>
 
                                                         <CardTitle className="text-base mt-2">Your Micro-Niche</CardTitle>
                                                     </CardHeader>
                                                     <CardContent className="text-base leading-relaxed">{instant.microNiche}</CardContent>
-
                                                 </Card>
 
-                                                {/* CONFIDENCE PANEL */}
                                                 <div
                                                     className={`
                             rounded-2xl border p-4 space-y-2
@@ -733,7 +754,6 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                         <CardContent className="text-sm leading-relaxed">
                                                             {instant.coreProblem?.trim() ? instant.coreProblem : "No clear problem returned — click “Try another”."}
                                                         </CardContent>
-
                                                     </Card>
 
                                                     <Card className="rounded-2xl">
@@ -741,10 +761,8 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                             <CardTitle className="text-base">First Service to Offer</CardTitle>
                                                         </CardHeader>
                                                         <CardContent className="space-y-2">
-                                                            <div className="text-sm font-medium">{instant?.firstService?.name ?? "—"}
-                                                            </div>
-                                                            <div className="text-sm text-muted-foreground">{instant?.firstService?.outcome ?? "—"}
-                                                            </div>
+                                                            <div className="text-sm font-medium">{instant?.firstService?.name ?? "—"}</div>
+                                                            <div className="text-sm text-muted-foreground">{instant?.firstService?.outcome ?? "—"}</div>
                                                         </CardContent>
                                                     </Card>
                                                 </div>
@@ -761,7 +779,6 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                                 <li className="text-muted-foreground">No buyer locations returned — click “Try another”.</li>
                                                             )}
                                                         </ul>
-
                                                     </CardContent>
                                                 </Card>
 
@@ -771,14 +788,13 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                     </CardHeader>
                                                     <CardContent className="text-sm">{instant.oneActionToday}</CardContent>
                                                 </Card>
+
                                                 <Card className="rounded-2xl bg-muted/30">
                                                     <CardHeader>
                                                         <CardTitle className="text-base">If you had 15 minutes</CardTitle>
                                                     </CardHeader>
                                                     <CardContent className="text-sm text-muted-foreground space-y-2">
-                                                        <p>
-                                                            You don’t need a website or a business name yet.
-                                                        </p>
+                                                        <p>You don’t need a website or a business name yet.</p>
                                                         <ul className="list-disc pl-5 space-y-1">
                                                             <li>Write a one-sentence description of this service</li>
                                                             <li>Find one place where these buyers already hang out</li>
@@ -787,47 +803,34 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                     </CardContent>
                                                 </Card>
 
-
-                                                {/* Upgrade / Deep Proof */}{/* Upgrade / Deep Proof */}
                                                 <div ref={deepSectionRef}>
                                                     <Card className="rounded-2xl border-dashed">
-                                                    <CardHeader className="flex flex-row items-center justify-between gap-3">
-                                                        <div>
-                                                            <CardTitle className="text-base">Want the full validation?</CardTitle>
-                                                            <p className="text-sm text-muted-foreground">
-                                                                Best for people who don’t want to guess.
-                                                            </p>
+                                                        <CardHeader className="flex flex-row items-center justify-between gap-3">
+                                                            <div>
+                                                                <CardTitle className="text-base">Want the full validation?</CardTitle>
+                                                                <p className="text-sm text-muted-foreground">Best for people who don’t want to guess.</p>
 
-                                                            <ul className="mt-2 text-sm text-muted-foreground space-y-1">
-                                                                <li>• Confirms whether this niche is actually viable</li>
-                                                                <li>• Shows demand signals and stability (2–5 years)</li>
-                                                                <li>• Flags risks before you invest time or money</li>
-                                                            </ul>
-
-                                                        </div>
-                                                        <div className="flex items-center gap-2">
-                                                            {paidUnlocked ? (
-                                                                <Badge variant="secondary" className="rounded-full flex items-center gap-1">
-                                                                    <Unlock className="h-3 w-3" /> Unlocked
-                                                                </Badge>
-                                                            ) : (
-                                                                <Badge variant="outline" className="rounded-full flex items-center gap-1">
-                                                                    <Lock className="h-3 w-3" /> Locked
-                                                                </Badge>
-                                                            )}
-                                                        </div>
-                                                    </CardHeader>
+                                                                <ul className="mt-2 text-sm text-muted-foreground space-y-1">
+                                                                    <li>• Confirms whether this niche is actually viable</li>
+                                                                    <li>• Shows demand signals and stability (2–5 years)</li>
+                                                                    <li>• Flags risks before you invest time or money</li>
+                                                                </ul>
+                                                            </div>
+                                                            <div className="flex items-center gap-2">
+                                                                {paidUnlocked ? (
+                                                                    <Badge variant="secondary" className="rounded-full flex items-center gap-1">
+                                                                        <Unlock className="h-3 w-3" /> Unlocked
+                                                                    </Badge>
+                                                                ) : (
+                                                                    <Badge variant="outline" className="rounded-full flex items-center gap-1">
+                                                                        <Lock className="h-3 w-3" /> Locked
+                                                                    </Badge>
+                                                                )}
+                                                            </div>
+                                                        </CardHeader>
 
                                                         <CardContent className="flex flex-col md:flex-row gap-3 md:items-start md:justify-between">
-                                                            {/* LEFT */}
                                                             <div className="space-y-4">
-                                                                {/* Top section (headline + bullets) */}
-                                                                <div className="space-y-2">
-                                                                    {/* keep your existing headline + subhead + bullets + locked badge exactly as-is ABOVE CardContent */}
-                                                                    {/* This wrapper is only for the content inside CardContent */}
-                                                                </div>
-
-                                                                {/* Offer + policy (the part we want the button aligned with) */}
                                                                 <div className="text-sm text-muted-foreground space-y-2 max-w-md">
                                                                     <div>One-time unlock — $27 • No subscription</div>
 
@@ -839,28 +842,41 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                                 </div>
                                                             </div>
 
-                                                            {/* RIGHT (aligned with offer section) */}
-                                                            <div className="md:pt-[88px] flex flex-col items-end gap-0.5">
+                                                            <div className="md:pt-[20px] flex flex-col items-end gap-0.5">
                                                                 {!paidUnlocked ? (
                                                                     <>
                                                                         <Button className="rounded-2xl" onClick={onUnlockDeep} disabled={!instant || isUnlocking}>
-                                                                            {isUnlocking ? "Opening secure checkout…" : "Unlock Full Validation"}
+                                                                            {isUnlocking ? (
+                                                                                <span className="flex items-center gap-2">
+                                          <Loader2 className="h-4 w-4 animate-spin" />
+                                          Opening secure checkout…
+                                        </span>
+                                                                            ) : (
+                                                                                "Unlock Full Validation"
+                                                                            )}
                                                                         </Button>
                                                                         <div className="text-xs text-muted-foreground">Secure checkout via Stripe · No subscription</div>
                                                                     </>
                                                                 ) : (
                                                                     <>
                                                                         <Button className="rounded-2xl" onClick={onGenerateDeep} disabled={!instant || isDeepLoading}>
-                                                                            {isDeepLoading ? "Running validation…" : "Run Full Validation"}
+                                                                            {isDeepLoading ? (
+                                                                                <span className="flex items-center gap-2">
+                                          <Loader2 className="h-4 w-4 animate-spin" />
+                                          Running validation…
+                                        </span>
+                                                                            ) : (
+                                                                                "Run Full Validation"
+                                                                            )}
                                                                         </Button>
                                                                         <div className="text-xs text-muted-foreground">Instant delivery · Same report</div>
                                                                     </>
                                                                 )}
                                                             </div>
                                                         </CardContent>
-
                                                     </Card>
                                                 </div>
+
                                                 <AnimatePresence mode="wait">
                                                     {mode === "deep" && !paidUnlocked && (
                                                         <motion.div
@@ -870,8 +886,8 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                             exit={{ opacity: 0, y: -10 }}
                                                             className="rounded-2xl border p-4 text-sm text-muted-foreground"
                                                         >
-                                                            You selected <span className="font-medium">Deep Proof</span>. Click{" "}
-                                                            <span className="font-medium">Unlock Deep Proof</span> to pay and unlock.
+                                                            You selected <span className="font-medium">Full Validation</span>. Click{" "}
+                                                            <span className="font-medium">Unlock Full Validation</span> to pay and unlock.
                                                         </motion.div>
                                                     )}
                                                 </AnimatePresence>
@@ -886,7 +902,7 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                             className="space-y-4"
                                                         >
                                                             <div className="flex items-center gap-2">
-                                                                <Badge className="rounded-full">Deep Proof</Badge>
+                                                                <Badge className="rounded-full">Full Validation</Badge>
                                                                 <Badge variant="secondary" className="rounded-full">
                                                                     Same niche
                                                                 </Badge>
@@ -977,118 +993,22 @@ export default function MicroNicheEngineFrontendPrototype() {
                                     </AnimatePresence>
                                 </TabsContent>
 
-                                {/* BUILDER / QA VIEW */}
+                                {/* BUILDER/QA VIEW (DEV ONLY) */}
                                 <TabsContent value="builder">
-                                    <AnimatePresence mode="wait">
-                                        {!instant ? (
-                                            <motion.div
-                                                key="emptyB"
-                                                initial={{ opacity: 0, y: 10 }}
-                                                animate={{ opacity: 1, y: 0 }}
-                                                exit={{ opacity: 0, y: -10 }}
-                                                className="rounded-2xl border p-6"
-                                            >
-                                                <p className="text-sm text-muted-foreground">
-                                                    Builder/QA view will show structured metadata after you generate a result.
-                                                </p>
-                                            </motion.div>
-                                        ) : (
-                                            <motion.div
-                                                key="meta"
-                                                initial={{ opacity: 0, y: 10 }}
-                                                animate={{ opacity: 1, y: 0 }}
-                                                exit={{ opacity: 0, y: -10 }}
-                                                className="space-y-4"
-                                            >
-                                                <div className="flex items-center justify-between">
-                                                    <div>
-                                                        <div className="text-sm font-medium">Quality / Confidence</div>
-                                                        <div className="text-sm text-muted-foreground">{confidenceLabel}</div>
-                                                    </div>
-                                                    <Badge variant="outline" className="rounded-full">
-                                                        Conservative scoring
-                                                    </Badge>
-                                                </div>
-
-                                                <Card className="rounded-2xl">
-                                                    <CardHeader>
-                                                        <CardTitle className="text-base">Gates passed</CardTitle>
-                                                    </CardHeader>
-                                                    <CardContent>
-                                                        <div className="flex flex-wrap gap-2">
-                                                            {(instant?.meta?.gatesPassed ?? []).map((g: string, i: number) => (
-                                                                <Badge key={i} variant="secondary" className="rounded-full">
-                                                                    {g}
-                                                                </Badge>
-                                                            ))}
-
-                                                        </div>
-                                                    </CardContent>
-                                                </Card>
-
-                                                <Card className="rounded-2xl">
-                                                    <CardHeader>
-                                                        <CardTitle className="text-base">Payments</CardTitle>
-                                                    </CardHeader>
-                                                    <CardContent className="space-y-2 text-sm text-muted-foreground">
-                                                        <div>Stripe session stored: {localStorage.getItem(LS_SESSION_KEY) ? "Yes" : "No"}</div>
-                                                        <div>Unlocked (verified): {paidUnlocked ? "Yes" : "No"}</div>
-                                                        <div>DValidation access is enforced securely on the server.
-                                                        </div>
-                                                    </CardContent>
-                                                </Card>
-
-                                                <Card className="rounded-2xl">
-                                                    <CardHeader>
-                                                        <CardTitle className="text-base">Session state</CardTitle>
-                                                    </CardHeader>
-                                                    <CardContent className="space-y-2 text-sm text-muted-foreground">
-                                                        <div>History count: {history.length}</div>
-                                                        <div>Saved count: {saved.length}</div>
-                                                        <div>Avoid repeats: {avoidRepeats ? "On" : "Off"}</div>
-                                                    </CardContent>
-                                                </Card>
-
-                                                <Card className="rounded-2xl">
-                                                    <CardHeader>
-                                                        <CardTitle className="text-base">Notes / constraints used</CardTitle>
-                                                    </CardHeader>
-                                                    <CardContent className="space-y-2">
-                                                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                                                            <div className="rounded-2xl border p-3">
-                                                                <div className="text-xs text-muted-foreground">Lane</div>
-                                                                <div className="text-sm font-medium">{lanes.find((l) => l.id === laneId)?.label}</div>
-                                                            </div>
-                                                            <div className="rounded-2xl border p-3">
-                                                                <div className="text-xs text-muted-foreground">Time</div>
-                                                                <div className="text-sm font-medium">{timeOptions.find((t) => t.id === timeId)?.label}</div>
-                                                            </div>
-                                                            <div className="rounded-2xl border p-3">
-                                                                <div className="text-xs text-muted-foreground">Level</div>
-                                                                <div className="text-sm font-medium">{levelOptions.find((t) => t.id === levelId)?.label}</div>
-                                                            </div>
-                                                        </div>
-                                                        <div className="rounded-2xl border p-3">
-                                                            <div className="text-xs text-muted-foreground">Optional note</div>
-                                                            <div className="text-sm">{notes ? notes : <span className="text-muted-foreground">(none)</span>}</div>
-                                                        </div>
-                                                    </CardContent>
-                                                </Card>
-                                            </motion.div>
-                                        )}
-                                    </AnimatePresence>
+                                    <div className="rounded-2xl border p-6 text-sm text-muted-foreground">
+                                        Builder view is only meaningful while DEV_MODE is enabled.
+                                    </div>
                                 </TabsContent>
                             </Tabs>
                         </CardContent>
                     </Card>
                 </div>
 
-                {DEV_MODE ? (
+                {!DEV_MODE ? null : (
                     <footer className="mt-10 text-xs text-muted-foreground">
-                        Tip: History/Saved are session-only right now. Next step can be persisting them to localStorage.
+                        Dev tip: Persisted History/Saved now survive refresh.
                     </footer>
-                ) : null}
-
+                )}
             </div>
         </div>
     );

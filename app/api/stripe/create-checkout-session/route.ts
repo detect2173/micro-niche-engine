@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
-export const runtime = "edge";
+export const runtime = "nodejs";
 
 function mustEnv(name: string) {
   const v = process.env[name];
@@ -8,14 +8,48 @@ function mustEnv(name: string) {
   return v;
 }
 
+/**
+ * Cloudflare/OpenNext sometimes makes req.url look like localhost internally.
+ * So derive the PUBLIC URL from headers.
+ */
+function getPublicBaseUrl(req: NextRequest) {
+  // 1) Cloudflare often includes cf-visitor: {"scheme":"https"}
+  const cfVisitor = req.headers.get("cf-visitor");
+  let protoFromCf: string | null = null;
+  if (cfVisitor) {
+    try {
+      const parsed = JSON.parse(cfVisitor);
+      if (parsed?.scheme) protoFromCf = String(parsed.scheme);
+    } catch {
+      // ignore
+    }
+  }
+
+  // 2) Standard proxies
+  const xfProto = req.headers.get("x-forwarded-proto");
+  const xfHost = req.headers.get("x-forwarded-host");
+
+  // 3) Fallbacks
+  const host = req.headers.get("host");
+  const proto = (protoFromCf || xfProto || "https").split(",")[0].trim();
+  const finalHost = (xfHost || host || "").split(",")[0].trim();
+
+  if (!finalHost) {
+    // absolute last resort: whatever Next gave us
+    const u = new URL(req.url);
+    return `${u.protocol}//${u.host}`;
+  }
+
+  return `${proto}://${finalHost}`;
+}
+
 async function stripeGet(path: string) {
   const key = mustEnv("STRIPE_SECRET_KEY");
   const res = await fetch(`https://api.stripe.com${path}`, {
     method: "GET",
-    headers: {
-      Authorization: `Bearer ${key}`,
-    },
+    headers: { Authorization: `Bearer ${key}` },
   });
+
   const text = await res.text();
   let json: any;
   try {
@@ -23,9 +57,8 @@ async function stripeGet(path: string) {
   } catch {
     json = { raw: text };
   }
-  if (!res.ok) {
-    return { ok: false, status: res.status, json };
-  }
+
+  if (!res.ok) return { ok: false, status: res.status, json };
   return { ok: true, status: res.status, json };
 }
 
@@ -39,6 +72,7 @@ async function stripePost(path: string, body: URLSearchParams) {
     },
     body: body.toString(),
   });
+
   const text = await res.text();
   let json: any;
   try {
@@ -46,25 +80,27 @@ async function stripePost(path: string, body: URLSearchParams) {
   } catch {
     json = { raw: text };
   }
-  if (!res.ok) {
-    return { ok: false, status: res.status, json };
-  }
+
+  if (!res.ok) return { ok: false, status: res.status, json };
   return { ok: true, status: res.status, json };
 }
 
 export async function POST(req: NextRequest) {
   try {
-    // Optional override (future-proof). Right now we default to env.
     const body = await req.json().catch(() => ({} as any));
     const priceId = (body?.priceId as string) || mustEnv("STRIPE_PRICE_DEEP_PROOF");
 
-    const appUrl = (process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000").replace(/\/$/, "");
+    // PUBLIC base url (micronicheengine.com)
+    const appUrl = getPublicBaseUrl(req).replace(/\/$/, "");
 
-    // Basic sanity check: price exists (helps catch wrong mode mixups)
+    // sanity: verify price exists
     const priceCheck = await stripeGet(`/v1/prices/${encodeURIComponent(priceId)}`);
     if (!priceCheck.ok) {
       return NextResponse.json(
-          { error: "Stripe price lookup failed. Check STRIPE_PRICE_DEEP_PROOF + mode (test vs live).", details: priceCheck.json },
+          {
+            error: "Stripe price lookup failed. Check STRIPE_PRICE_DEEP_PROOF + test/live mode.",
+            details: priceCheck.json,
+          },
           { status: 500 }
       );
     }
@@ -76,11 +112,8 @@ export async function POST(req: NextRequest) {
     params.set("mode", "payment");
     params.set("success_url", successUrl);
     params.set("cancel_url", cancelUrl);
-
     params.set("line_items[0][price]", priceId);
     params.set("line_items[0][quantity]", "1");
-
-    // Optional but useful:
     params.set("allow_promotion_codes", "true");
 
     const created = await stripePost("/v1/checkout/sessions", params);
@@ -91,7 +124,12 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    return NextResponse.json({ url: created.json.url, id: created.json.id });
+    // include debug so we can see exactly what base URL was used
+    return NextResponse.json({
+      url: created.json.url,
+      id: created.json.id,
+      appUrlUsed: appUrl,
+    });
   } catch (err: any) {
     return NextResponse.json({ error: err?.message || "Unknown error" }, { status: 500 });
   }
