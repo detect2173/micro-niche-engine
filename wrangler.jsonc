@@ -4,10 +4,12 @@
 	"name": "micro-niche-engine",
 	"compatibility_date": "2025-12-21",
 	"compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+
 	"assets": {
 		"directory": ".open-next/assets",
 		"binding": "ASSETS"
 	},
+
 	"services": [
 		{
 			// Self-reference service binding, the service name must match the worker name
@@ -16,6 +18,7 @@
 			"service": "micro-niche-engine"
 		}
 	],
+
 	"r2_buckets": [
 		// Use R2 incremental cache
 		// See https://opennext.js.org/cloudflare/caching
@@ -27,9 +30,26 @@
 			"bucket_name": "cache"
 		}
 	],
+
 	"images": {
 		// Enable image optimization
 		// see https://opennext.js.org/cloudflare/howtos/image
 		"binding": "IMAGES"
+	},
+
+	"observability": {
+		"enabled": false,
+		"head_sampling_rate": 1,
+		"logs": {
+			"enabled": true,
+			"head_sampling_rate": 1,
+			"persist": true,
+			"invocation_logs": true
+		},
+		"traces": {
+			"enabled": true,
+			"persist": true,
+			"head_sampling_rate": 1
+		}
 	}
 }
