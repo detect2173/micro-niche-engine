@@ -337,21 +337,35 @@ export default function MicroNicheEngineFrontendPrototype() {
                         <CardContent className="space-y-5">
                             <div className="space-y-2">
                                 <Label>What do you want?</Label>
-                                <div className="grid grid-cols-2 gap-2">
-                                    <Button
+                                <div className="grid grid-cols-2 gap-2 items-stretch">
+                                <Button
                                         variant={mode === "instant" ? "default" : "outline"}
-                                        className="rounded-2xl justify-start"
+                                        className="rounded-2xl h-full min-h-[48px] flex items-center justify-center gap-2 px-3 py-2 text-center whitespace-normal leading-snug"
+
+
                                         onClick={() => setMode("instant")}
                                     >
-                                        <Sparkles className="h-4 w-4 mr-2" /> Free Instant Result
-                                    </Button>
+                                        <Sparkles className="h-4 w-4 shrink-0" />
+
+                                    <span className="flex flex-col items-center leading-tight">
+  <span>Free Instant Result</span>
+  <span className="text-[10px] opacity-50 tracking-wide">Recommended</span>
+
+</span>
+
+                                </Button>
                                     <Button
                                         variant={mode === "deep" ? "default" : "outline"}
-                                        className="rounded-2xl justify-start"
+                                        className="rounded-2xl h-full min-h-[48px] flex items-center justify-center gap-2 px-3 py-2 text-center whitespace-normal leading-snug"
+
                                         onClick={() => setMode("deep")}
                                     >
-                                        <ShieldCheck className="h-4 w-4 mr-2" /> Full Validation
+                                        <ShieldCheck className="h-4 w-4 shrink-0" />
+
+                                        <span className="block">Full Validation</span>
                                     </Button>
+
+
                                 </div>
                                 <p className="text-xs text-muted-foreground">
                                     You’ll see the instant result first. Validation is an optional upgrade.
@@ -600,14 +614,22 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                 exit={{ opacity: 0, y: -10 }}
                                                 className="rounded-2xl border p-6 text-center"
                                             >
-                                                <div className="mx-auto max-w-md space-y-2">
+                                                <div className="mx-auto max-w-md space-y-4">
                                                     <p className="text-sm text-muted-foreground">You’re one click away.</p>
+
                                                     <p className="text-base">
-                                                        Choose an industry — or let us surprise you — then click <span className="font-medium">Find My Micro-Niche</span>.
+                                                        Choose an industry — or let us surprise you — then click{" "}
+                                                        <span className="font-medium">Find My Micro-Niche</span>.
                                                     </p>
 
+                                                    <ul className="mt-2 text-sm text-muted-foreground space-y-2 text-left">
+                                                        <li>• A specific, realistic micro-niche</li>
+                                                        <li>• The first service you could offer</li>
+                                                        <li>• Where to find your first buyers</li>
+                                                    </ul>
                                                 </div>
                                             </motion.div>
+
                                         ) : (
                                             <motion.div
                                                 key="result"
@@ -749,6 +771,22 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                     </CardHeader>
                                                     <CardContent className="text-sm">{instant.oneActionToday}</CardContent>
                                                 </Card>
+                                                <Card className="rounded-2xl bg-muted/30">
+                                                    <CardHeader>
+                                                        <CardTitle className="text-base">If you had 15 minutes</CardTitle>
+                                                    </CardHeader>
+                                                    <CardContent className="text-sm text-muted-foreground space-y-2">
+                                                        <p>
+                                                            You don’t need a website or a business name yet.
+                                                        </p>
+                                                        <ul className="list-disc pl-5 space-y-1">
+                                                            <li>Write a one-sentence description of this service</li>
+                                                            <li>Find one place where these buyers already hang out</li>
+                                                            <li>Save this niche and try one more to compare</li>
+                                                        </ul>
+                                                    </CardContent>
+                                                </Card>
+
 
                                                 {/* Upgrade / Deep Proof */}{/* Upgrade / Deep Proof */}
                                                 <div ref={deepSectionRef}>
@@ -757,8 +795,15 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                         <div>
                                                             <CardTitle className="text-base">Want the full validation?</CardTitle>
                                                             <p className="text-sm text-muted-foreground">
-                                                                See the evidence, risks, and safer expansion paths before you commit.
+                                                                Best for people who don’t want to guess.
                                                             </p>
+
+                                                            <ul className="mt-2 text-sm text-muted-foreground space-y-1">
+                                                                <li>• Confirms whether this niche is actually viable</li>
+                                                                <li>• Shows demand signals and stability (2–5 years)</li>
+                                                                <li>• Flags risks before you invest time or money</li>
+                                                            </ul>
+
                                                         </div>
                                                         <div className="flex items-center gap-2">
                                                             {paidUnlocked ? (
@@ -773,20 +818,48 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                         </div>
                                                     </CardHeader>
 
-                                                    <CardContent className="flex flex-col md:flex-row gap-3 md:items-center md:justify-between">
-                                                        <div className="text-sm text-muted-foreground">One-time unlock — $27</div>
+                                                        <CardContent className="flex flex-col md:flex-row gap-3 md:items-start md:justify-between">
+                                                            {/* LEFT */}
+                                                            <div className="space-y-4">
+                                                                {/* Top section (headline + bullets) */}
+                                                                <div className="space-y-2">
+                                                                    {/* keep your existing headline + subhead + bullets + locked badge exactly as-is ABOVE CardContent */}
+                                                                    {/* This wrapper is only for the content inside CardContent */}
+                                                                </div>
 
-                                                        {!paidUnlocked ? (
-                                                            <Button className="rounded-2xl" onClick={onUnlockDeep} disabled={!instant || isUnlocking}>
-                                                                {isUnlocking ? "Opening secure checkout…" : "Unlock Full Validation"}
-                                                            </Button>
-                                                        ) : (
-                                                            <Button className="rounded-2xl" onClick={onGenerateDeep} disabled={!instant || isDeepLoading}>
-                                                                {isDeepLoading ? "Running validation…" : "Run Full Validation"}
-                                                            </Button>
-                                                        )}
-                                                    </CardContent>
-                                                </Card>
+                                                                {/* Offer + policy (the part we want the button aligned with) */}
+                                                                <div className="text-sm text-muted-foreground space-y-2 max-w-md">
+                                                                    <div>One-time unlock — $27 • No subscription</div>
+
+                                                                    <div className="text-xs text-muted-foreground space-y-1">
+                                                                        <div>This is an instant, one-time analysis.</div>
+                                                                        <div>All purchases are final once the report is delivered.</div>
+                                                                        <div>If a technical issue prevents delivery, we’ll refund immediately.</div>
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+
+                                                            {/* RIGHT (aligned with offer section) */}
+                                                            <div className="md:pt-[88px] flex flex-col items-end gap-0.5">
+                                                                {!paidUnlocked ? (
+                                                                    <>
+                                                                        <Button className="rounded-2xl" onClick={onUnlockDeep} disabled={!instant || isUnlocking}>
+                                                                            {isUnlocking ? "Opening secure checkout…" : "Unlock Full Validation"}
+                                                                        </Button>
+                                                                        <div className="text-xs text-muted-foreground">Secure checkout via Stripe · No subscription</div>
+                                                                    </>
+                                                                ) : (
+                                                                    <>
+                                                                        <Button className="rounded-2xl" onClick={onGenerateDeep} disabled={!instant || isDeepLoading}>
+                                                                            {isDeepLoading ? "Running validation…" : "Run Full Validation"}
+                                                                        </Button>
+                                                                        <div className="text-xs text-muted-foreground">Instant delivery · Same report</div>
+                                                                    </>
+                                                                )}
+                                                            </div>
+                                                        </CardContent>
+
+                                                    </Card>
                                                 </div>
                                                 <AnimatePresence mode="wait">
                                                     {mode === "deep" && !paidUnlocked && (
