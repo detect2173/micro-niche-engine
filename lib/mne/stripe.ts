@@ -22,9 +22,11 @@ export async function createDeepProofCheckoutSession() {
     const price = process.env.STRIPE_PRICE_DEEP_PROOF;
     if (!price) throw new Error("Missing STRIPE_PRICE_DEEP_PROOF");
 
-    const appUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
-    const successUrl = `${appUrl}/prototype?session_id={CHECKOUT_SESSION_ID}`;
-    const cancelUrl = `${appUrl}/prototype?canceled=1`;
+    const appUrl: string = (process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000").replace(/\/+$/, "");
+
+    const successUrl = `${appUrl}/?paid=1&session_id={CHECKOUT_SESSION_ID}`;
+    const cancelUrl = `${appUrl}/?canceled=1`;
+
 
     const session = await stripe.checkout.sessions.create({
         mode: "payment",
