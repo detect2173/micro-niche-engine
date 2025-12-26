@@ -108,15 +108,45 @@ const CLEAR_WIPES_LISTS = false;
  *  Helpers
  *  ----------------------------- */
 
+async function safeReadJson(res: Response): Promise<unknown> {
+    try {
+        return await res.json();
+    } catch {
+        return null;
+    }
+}
+
+function isRecord(x: unknown): x is Record<string, unknown> {
+    return x !== null && typeof x === "object";
+}
+
+
+function getApiErrorMessage(payload: unknown): string | null {
+    if (payload === null || typeof payload !== "object") return null;
+
+    const p = payload as Record<string, unknown>;
+    const msg =
+        typeof p.message === "string"
+            ? p.message
+            : typeof p.error === "string"
+                ? p.error
+                : null;
+
+    return msg && msg.trim() ? msg : null;
+}
+
+
 function short(s: string, max = 88) {
     if (!s) return s;
     return s.length > max ? s.slice(0, max - 1) + "…" : s;
 }
 
 // Stable key so we can dedupe + star across refreshes.
-function keyForInstant(x: any) {
-    const lane = String(x?.meta?.lane ?? x?.lane ?? "Lane").trim();
-    const micro = String(x?.microNiche ?? x?.micro_niche ?? x?.name ?? x?.micro ?? "Unknown").trim();
+function keyForInstant(x: unknown) {
+    const obj = x && typeof x === "object" ? (x as Record<string, unknown>) : {};
+    const meta = obj.meta && typeof obj.meta === "object" ? (obj.meta as Record<string, unknown>) : {};
+    const lane = String(meta.lane ?? obj.lane ?? "Lane").trim();
+    const micro = String(obj.microNiche ?? obj.micro_niche ?? obj.name ?? obj.micro ?? "Unknown").trim();
     return `${lane}::${micro}`;
 }
 
@@ -206,8 +236,7 @@ export default function MicroNicheEngineFrontendPrototype() {
 
     const confidenceLabel: Confidence = instant?.meta?.confidence ?? "Medium";
     const confidenceWhy =
-        instant?.meta?.confidenceWhy ??
-        "Rating is based on buyer clarity, money proximity, and evidence strength.";
+        instant?.meta?.confidenceWhy ?? "Rating is based on buyer clarity, money proximity, and evidence strength.";
     const confidenceDrivers = instant?.meta?.confidenceDrivers ?? [];
     const confidenceRaise = instant?.meta?.confidenceRaise ?? [];
 
@@ -216,6 +245,14 @@ export default function MicroNicheEngineFrontendPrototype() {
         const k = keyForInstant(instant);
         return saved.some((s) => keyForInstant(s) === k);
     }, [instant, saved]);
+
+    // ✅ Visible History = History minus Saved (prevents redundancy)
+    const visibleHistory = useMemo(() => {
+        if (!history.length) return [];
+        if (!saved.length) return history;
+        const savedKeys = new Set(saved.map((s) => keyForInstant(s)));
+        return history.filter((h) => !savedKeys.has(keyForInstant(h)));
+    }, [history, saved]);
 
     /** -----------------------------
      *  Persistence: history + saved
@@ -254,7 +291,7 @@ export default function MicroNicheEngineFrontendPrototype() {
         });
     };
 
-    const useResult = (res: InstantProof) => {
+    const selectResult = (res: InstantProof) => {
         setInstant(res);
         setDeep(null);
         setMode("instant");
@@ -265,6 +302,7 @@ export default function MicroNicheEngineFrontendPrototype() {
         setInstant(null);
         setDeep(null);
         setMode("instant");
+        window.scrollTo({ top: 0, behavior: "smooth" });
     };
 
     const clearEverything = () => {
@@ -330,10 +368,9 @@ export default function MicroNicheEngineFrontendPrototype() {
      *  ----------------------------- */
 
     const onGenerate = async () => {
-        // IMPORTANT: clear old deep immediately so the UI doesn't show old paid block
         setDeep(null);
-
         setIsGenerating(true);
+
         try {
             const avoidMicroNiches = avoidRepeats ? history.map((h) => h.microNiche) : [];
 
@@ -351,39 +388,38 @@ export default function MicroNicheEngineFrontendPrototype() {
             });
 
             if (!res.ok) {
-                const err = await res.json().catch(() => ({}));
-                throw new Error(err?.message || `Request failed: ${res.status}`);
+                const err = await safeReadJson(res);
+                alert(`Instant generation failed: ${getApiErrorMessage(err) ?? `Request failed: ${res.status}`}`);
+                return;
             }
 
-            const json = (await res.json()) as InstantProof;
+            const json = (await safeReadJson(res)) as InstantProof;
             setInstant(json);
             addToHistory(json);
 
             if (mode === "deep") {
-                setTimeout(() => {
-                    deepSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-                }, 150);
+                setTimeout(() => deepSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 150);
             }
 
-            // re-verify pass (keeps unlock across multiple niches)
             const sessionId = localStorage.getItem(LS_SESSION_KEY);
             if (sessionId) {
                 try {
                     const vr = await fetch(`/api/stripe/verify-session?session_id=${encodeURIComponent(sessionId)}`);
-                    const vj = (await vr.json()) as VerifyResponse;
+                    const vj = (await safeReadJson(vr)) as VerifyResponse;
                     setPaidUnlocked(!!vj?.paid);
                     if (typeof vj?.passExpiresAt === "number") setPassExpiresAt(vj.passExpiresAt);
                     if (typeof vj?.secondsRemaining === "number") setSecondsRemaining(vj.secondsRemaining);
                 } catch {
-                    // leave current state
+                    // leave the current state
                 }
             }
-        } catch (e: any) {
-            alert(`Instant generation failed: ${e?.message ?? "Unknown error"}`);
+        } catch (e: unknown) {
+            alert(`Instant generation failed: ${getApiErrorMessage(e) ?? (e instanceof Error ? e.message : "Unknown error")}`);
         } finally {
             setIsGenerating(false);
         }
     };
+
 
     const onUnlockDeep = async () => {
         if (!instant) return;
@@ -391,15 +427,27 @@ export default function MicroNicheEngineFrontendPrototype() {
         setIsUnlocking(true);
         try {
             const r = await fetch("/api/stripe/create-checkout-session", { method: "POST" });
-            const j = await r.json().catch(() => ({}));
-            if (!r.ok || !j?.url) throw new Error(j?.error || "Checkout session creation failed.");
-            window.location.href = j.url;
-        } catch (e: any) {
-            alert(`Checkout failed: ${e?.message ?? "Unknown error"}`);
+            const j = await safeReadJson(r);
+
+            if (!r.ok) {
+                alert(`Checkout failed: ${getApiErrorMessage(j) ?? `Request failed: ${r.status}`}`);
+                return;
+            }
+
+            const url = isRecord(j) && typeof j.url === "string" ? j.url : "";
+            if (!url) {
+                alert("Checkout failed: Checkout session creation failed.");
+                return;
+            }
+
+            window.location.href = url;
+        } catch (e: unknown) {
+            alert(`Checkout failed: ${getApiErrorMessage(e) ?? (e instanceof Error ? e.message : "Unknown error")}`);
         } finally {
             setIsUnlocking(false);
         }
     };
+
 
     const onGenerateDeep = async () => {
         if (!instant) return;
@@ -418,14 +466,18 @@ export default function MicroNicheEngineFrontendPrototype() {
                 body: JSON.stringify({ sessionId, instant, notes }),
             });
 
-            const j = await r.json().catch(() => ({}));
+            const j = await safeReadJson(r);
 
             if (r.status === 402) {
                 setPaidUnlocked(false);
                 alert("Full Validation is locked or expired. Please unlock again.");
                 return;
             }
-            if (!r.ok) throw new Error(j?.error || `Full Validation failed: ${r.status}`);
+
+            if (!r.ok) {
+                alert(`Full Validation failed: ${getApiErrorMessage(j) ?? `Request failed: ${r.status}`}`);
+                return;
+            }
 
             const dp = j as DeepProof;
             setDeep(dp);
@@ -434,25 +486,58 @@ export default function MicroNicheEngineFrontendPrototype() {
             if (typeof dp?.meta?.passExpiresAt === "number") setPassExpiresAt(dp.meta.passExpiresAt);
             if (typeof dp?.meta?.secondsRemaining === "number") setSecondsRemaining(dp.meta.secondsRemaining);
 
-            // scroll to deep result
-            setTimeout(() => {
-                deepSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-            }, 150);
-        } catch (e: any) {
-            alert(`Full Validation failed: ${e?.message ?? "Unknown error"}`);
+            setTimeout(() => deepSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 150);
+        } catch (e: unknown) {
+            alert(`Full Validation failed: ${getApiErrorMessage(e) ?? (e instanceof Error ? e.message : "Unknown error")}`);
         } finally {
             setIsDeepLoading(false);
         }
     };
+
+
+    function firstNonEmpty(arr?: (string | null | undefined)[] | null) {
+        return (arr ?? []).map((x) => (x ?? "").trim()).find(Boolean) ?? "";
+    }
+
+    function buildQuickStart15Steps(x: InstantProof): string[] {
+        const niche = (x.microNiche ?? "").trim();
+        const problem = (x.coreProblem ?? "").trim();
+        const svc = (x.firstService?.name ?? "").trim();
+        const outcome = (x.firstService?.outcome ?? "").trim();
+        const place = firstNonEmpty(x.buyerPlaces);
+
+        // fallback if weak data exists
+        if (!niche || !svc) {
+            return [
+                "Write a 1-sentence offer with a clear outcome + timeframe (e.g., “I can improve X in 7 days”).",
+                "Pick one channel where buyers already hang out (FB groups, LinkedIn, directories) and collect 10 targets.",
+                "Send 5 short messages today: problem → outcome → one question. Track replies in a note.",
+            ];
+        }
+
+        const offer = `I help ${niche}${problem ? ` solve ${problem.toLowerCase()}` : ""} with ${svc}${
+            outcome ? ` so they get ${outcome.toLowerCase()}` : ""
+        }.`;
+
+        return [
+            `Write your one-liner offer: “${offer}”`,
+            place
+                ? `Open ${place} and make a list of 10 prospects. (Look for anyone doing this manually.)`
+                : "Pick one place buyers hang out (FB group, LinkedIn search, Yelp/Google listings) and list 10 prospects.",
+            `Send 5 DMs/emails today: “Quick question — are you currently handling ${problem || "this"} manually, or do you have a system?”`,
+            `Create a 60-second “proof stub” (mockup, screenshot, or Loom) showing what "${svc}" looks like for ${niche}.`,
+        ];
+    }
 
     const onDownloadPdf = () => {
         if (!instant) return;
 
         const title = `Micro-Niche Report`;
         const subtitle = `${instant.meta?.lane ?? "Lane"} • ${new Date().toLocaleString()}`;
+        const quick15 = buildQuickStart15Steps(instant);
 
         const html = `<!doctype html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8" />
   <title>${escapeHtml(title)}</title>
@@ -505,6 +590,15 @@ export default function MicroNicheEngineFrontendPrototype() {
   <div class="section">
     <div class="label">One Action Today</div>
     <div>${escapeHtml(instant.oneActionToday || "—")}</div>
+  </div>
+
+  <div class="section">
+    <div class="label">If you had 15 minutes</div>
+    ${
+            Array.isArray(quick15) && quick15.length
+                ? `<ul>${quick15.map((s) => `<li>${escapeHtml(s)}</li>`).join("")}</ul>`
+                : `<div class="muted">—</div>`
+        }
   </div>
 
   ${
@@ -583,15 +677,40 @@ export default function MicroNicheEngineFrontendPrototype() {
 </body>
 </html>`;
 
-
         const w = window.open("", "_blank");
         if (!w) {
             alert("Popup blocked. Allow popups for this site to download the PDF.");
             return;
         }
-        w.document.open();
-        w.document.write(html);
-        w.document.close();
+
+// Avoid document.write (deprecated). Use DOM APIs instead.
+        w.document.title = title;
+
+        const doc = w.document;
+
+// Ensure we have a head/body to work with
+        const head = doc.head ?? doc.getElementsByTagName("head")[0] ?? doc.createElement("head");
+        const body = doc.body ?? doc.getElementsByTagName("body")[0] ?? doc.createElement("body");
+
+        if (!doc.head) doc.documentElement.appendChild(head);
+        if (!doc.body) doc.documentElement.appendChild(body);
+
+// Parse HTML and replace the document contents cleanly
+        const parser = new DOMParser();
+        const parsed = parser.parseFromString(html, "text/html");
+
+        doc.documentElement.lang = parsed.documentElement.lang || "en";
+
+// Replace head
+        head.innerHTML = parsed.head?.innerHTML ?? "";
+
+// Replace body
+        body.innerHTML = parsed.body?.innerHTML ?? "";
+
+// Trigger print after content is in place
+        w.focus();
+        setTimeout(() => w.print(), 250);
+
     };
 
     /** -----------------------------
@@ -639,9 +758,9 @@ export default function MicroNicheEngineFrontendPrototype() {
                                     >
                                         <Sparkles className="h-4 w-4 shrink-0" />
                                         <span className="flex flex-col items-center leading-tight">
-                      <span>Free Instant Result</span>
-                      <span className="text-[10px] opacity-50 tracking-wide">Recommended</span>
-                    </span>
+                                            <span>Free Instant Result</span>
+                                            <span className="text-[10px] opacity-50 tracking-wide">Recommended</span>
+                                        </span>
                                     </Button>
 
                                     <Button
@@ -730,13 +849,13 @@ export default function MicroNicheEngineFrontendPrototype() {
                             <Button className="w-full rounded-2xl" onClick={onGenerate} disabled={!userReady || isGenerating}>
                                 {isGenerating ? (
                                     <span className="flex items-center gap-2">
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    Finding your niche…
-                  </span>
+                                        <Loader2 className="h-4 w-4 animate-spin" />
+                                        Finding your niche…
+                                    </span>
                                 ) : (
                                     <span className="flex items-center gap-2">
-                    Find My Micro-Niche <ChevronRight className="h-4 w-4" />
-                  </span>
+                                        Find My Micro-Niche <ChevronRight className="h-4 w-4" />
+                                    </span>
                                 )}
                             </Button>
 
@@ -792,18 +911,17 @@ export default function MicroNicheEngineFrontendPrototype() {
                                         <CardTitle className="text-base flex items-center gap-2">
                                             <History className="h-4 w-4" /> History
                                             <Badge variant="secondary" className="rounded-full">
-                                                {history.length}
+                                                {visibleHistory.length}
                                             </Badge>
                                         </CardTitle>
                                     </CardHeader>
-                                    <CardContent className="space-y-2">
-                                        {history.length === 0 ? (
+                                    <CardContent className="space-y-2 max-h-[320px] overflow-auto">
+                                        {visibleHistory.length === 0 ? (
                                             <div className="text-sm text-muted-foreground">Generate to populate history.</div>
                                         ) : (
                                             <div className="space-y-2">
-                                                {history.slice(0, 8).map((h) => {
+                                                {visibleHistory.slice(0, 30).map((h) => {
                                                     const k = keyForInstant(h);
-                                                    const isHsaved = saved.some((s) => keyForInstant(s) === k);
                                                     return (
                                                         <div key={k} className="rounded-2xl border p-3 flex items-start justify-between gap-3">
                                                             <div className="min-w-0">
@@ -818,22 +936,16 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                                 <div className="text-sm font-medium truncate">{short(h.microNiche, 80)}</div>
                                                             </div>
                                                             <div className="flex items-center gap-2">
-                                                                <Button variant="outline" className="rounded-2xl" onClick={() => useResult(h)}>
+                                                                <Button variant="outline" className="rounded-2xl" onClick={() => selectResult(h)}>
                                                                     Use
                                                                 </Button>
-                                                                <Button
-                                                                    variant={isHsaved ? "default" : "outline"}
-                                                                    className="rounded-2xl"
-                                                                    onClick={() => toggleSave(h)}
-                                                                    title={isHsaved ? "Remove" : "Star"}
-                                                                >
-                                                                    {isHsaved ? <Star className="h-4 w-4" /> : <StarOff className="h-4 w-4" />}
+                                                                <Button variant="outline" className="rounded-2xl" onClick={() => toggleSave(h)} title="Star">
+                                                                    <StarOff className="h-4 w-4" />
                                                                 </Button>
                                                             </div>
                                                         </div>
                                                     );
                                                 })}
-                                                {history.length > 8 && <div className="text-xs text-muted-foreground">Showing 8 of {history.length}.</div>}
                                             </div>
                                         )}
                                     </CardContent>
@@ -849,12 +961,11 @@ export default function MicroNicheEngineFrontendPrototype() {
                                         </CardTitle>
                                     </CardHeader>
                                     <CardContent className="space-y-2 max-h-[320px] overflow-auto">
-
-                                    {saved.length === 0 ? (
+                                        {saved.length === 0 ? (
                                             <div className="text-sm text-muted-foreground">Star any result to save it here.</div>
                                         ) : (
                                             <div className="space-y-2">
-                                                {saved.slice(0, 8).map((s) => {
+                                                {saved.slice(0, 30).map((s) => {
                                                     const k = keyForInstant(s);
                                                     return (
                                                         <div key={k} className="rounded-2xl border p-3 flex items-start justify-between gap-3">
@@ -870,7 +981,7 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                                 <div className="text-sm font-medium truncate">{short(s.microNiche, 80)}</div>
                                                             </div>
                                                             <div className="flex items-center gap-2">
-                                                                <Button variant="outline" className="rounded-2xl" onClick={() => useResult(s)}>
+                                                                <Button variant="outline" className="rounded-2xl" onClick={() => selectResult(s)}>
                                                                     Use
                                                                 </Button>
                                                                 <Button variant="default" className="rounded-2xl" onClick={() => toggleSave(s)} title="Unsave">
@@ -880,7 +991,6 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                         </div>
                                                     );
                                                 })}
-                                                {saved.length > 8 && <div className="text-xs text-muted-foreground">Showing 8 of {saved.length}.</div>}
                                             </div>
                                         )}
                                     </CardContent>
@@ -932,6 +1042,10 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                     </div>
 
                                                     <div className="flex items-center gap-2">
+                                                        <Button variant="outline" className="rounded-2xl" onClick={clearCurrent} title="Clear result">
+                                                            Clear
+                                                        </Button>
+
                                                         <Button
                                                             variant="outline"
                                                             className="rounded-2xl"
@@ -1029,9 +1143,8 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                 <CardHeader>
                                                     <CardTitle className="text-base">First Service to Offer</CardTitle>
                                                 </CardHeader>
-                                                <CardContent className="space-y-2 max-h-[320px] overflow-auto">
-
-                                                <div className="text-sm font-medium">{instant?.firstService?.name ?? "—"}</div>
+                                                <CardContent className="space-y-2">
+                                                    <div className="text-sm font-medium">{instant?.firstService?.name ?? "—"}</div>
                                                     <div className="text-sm text-muted-foreground">{instant?.firstService?.outcome ?? "—"}</div>
                                                 </CardContent>
                                             </Card>
@@ -1058,14 +1171,9 @@ export default function MicroNicheEngineFrontendPrototype() {
                                             </CardHeader>
                                             <CardContent className="text-sm">{instant.oneActionToday}</CardContent>
                                         </Card>
+
                                         {instant && (
-                                            <QuickStart15
-                                                microNiche={instant.microNiche}
-                                                coreProblem={instant.coreProblem}
-                                                serviceName={instant.firstService?.name}
-                                                serviceOutcome={instant.firstService?.outcome}
-                                                buyerPlaces={instant.buyerPlaces}
-                                            />
+                                            <QuickStart15 steps={buildQuickStart15Steps(instant)} />
                                         )}
 
                                         {/* Full Validation */}
@@ -1114,9 +1222,9 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                                 <Button className="rounded-2xl" onClick={onUnlockDeep} disabled={!instant || isUnlocking}>
                                                                     {isUnlocking ? (
                                                                         <span className="flex items-center gap-2">
-                                      <Loader2 className="h-4 w-4 animate-spin" />
-                                      Opening secure checkout…
-                                    </span>
+                                                                            <Loader2 className="h-4 w-4 animate-spin" />
+                                                                            Opening secure checkout…
+                                                                        </span>
                                                                     ) : (
                                                                         "Unlock Full Validation"
                                                                     )}
@@ -1128,9 +1236,9 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                                 <Button className="rounded-2xl" onClick={onGenerateDeep} disabled={!instant || isDeepLoading}>
                                                                     {isDeepLoading ? (
                                                                         <span className="flex items-center gap-2">
-                                      <Loader2 className="h-4 w-4 animate-spin" />
-                                      Running validation…
-                                    </span>
+                                                                            <Loader2 className="h-4 w-4 animate-spin" />
+                                                                            Running validation…
+                                                                        </span>
                                                                     ) : (
                                                                         "Run Full Validation"
                                                                     )}
