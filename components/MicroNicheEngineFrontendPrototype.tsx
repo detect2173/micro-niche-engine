@@ -26,6 +26,7 @@ import {
     Loader2,
     Download,
 } from "lucide-react";
+import QuickStart15 from "@/components/QuickStart15";
 
 /** -----------------------------
  *  Types
@@ -450,8 +451,7 @@ export default function MicroNicheEngineFrontendPrototype() {
         const title = `Micro-Niche Report`;
         const subtitle = `${instant.meta?.lane ?? "Lane"} • ${new Date().toLocaleString()}`;
 
-        const html = `import QuickStart15 from "@/components/QuickStart15"; 
-<!doctype html>
+        const html = `<!doctype html>
 <html>
 <head>
   <meta charset="utf-8" />
@@ -482,7 +482,7 @@ export default function MicroNicheEngineFrontendPrototype() {
 
   <div class="section">
     <div class="label">Your Micro-Niche</div>
-    <div>${escapeHtml(instant.microNiche)}</div>
+    <div>${escapeHtml(instant.microNiche || "—")}</div>
   </div>
 
   <div class="grid">
@@ -506,13 +506,6 @@ export default function MicroNicheEngineFrontendPrototype() {
     <div class="label">One Action Today</div>
     <div>${escapeHtml(instant.oneActionToday || "—")}</div>
   </div>
-<QuickStart15
-  microNiche={instant.microNiche}
-  coreProblem={instant.coreProblem}
-  serviceName={instant.firstService?.name}
-  serviceOutcome={instant.firstService?.outcome}
-  buyerPlaces={instant.buyerPlaces}
-/>
 
   ${
             deep
@@ -526,11 +519,11 @@ export default function MicroNicheEngineFrontendPrototype() {
   <div class="grid">
     <div class="section">
       <div class="label">Why this niche exists</div>
-      <div>${escapeHtml(deep.whyExists)}</div>
+      <div>${escapeHtml(deep.whyExists || "—")}</div>
     </div>
     <div class="section">
       <div class="label">Why it’s underserved</div>
-      <div>${escapeHtml(deep.underserved)}</div>
+      <div>${escapeHtml(deep.underserved || "—")}</div>
     </div>
   </div>
 
@@ -541,7 +534,7 @@ export default function MicroNicheEngineFrontendPrototype() {
 
   <div class="section">
     <div class="label">Why it’s stable (2–5 years)</div>
-    <div>${escapeHtml(deep.stability)}</div>
+    <div>${escapeHtml(deep.stability || "—")}</div>
   </div>
 
   <div class="section">
@@ -565,10 +558,10 @@ export default function MicroNicheEngineFrontendPrototype() {
                         ? deep.riskCheck
                             .map(
                                 (r) => `
-                <div style="border:1px solid #eee;border-radius:10px;padding:10px;margin:8px 0;">
-                  <div><b>${escapeHtml(r.risk)}</b></div>
-                  <div class="muted">${escapeHtml(r.mitigation)}</div>
-                </div>`
+        <div style="border:1px solid #eee;border-radius:10px;padding:10px;margin:8px 0;">
+          <div><b>${escapeHtml(r.risk)}</b></div>
+          <div class="muted">${escapeHtml(r.mitigation)}</div>
+        </div>`
                             )
                             .join("")
                         : `<div class="muted">—</div>`
@@ -589,6 +582,7 @@ export default function MicroNicheEngineFrontendPrototype() {
   </script>
 </body>
 </html>`;
+
 
         const w = window.open("", "_blank");
         if (!w) {
@@ -854,8 +848,9 @@ export default function MicroNicheEngineFrontendPrototype() {
                                             </Badge>
                                         </CardTitle>
                                     </CardHeader>
-                                    <CardContent className="space-y-2">
-                                        {saved.length === 0 ? (
+                                    <CardContent className="space-y-2 max-h-[320px] overflow-auto">
+
+                                    {saved.length === 0 ? (
                                             <div className="text-sm text-muted-foreground">Star any result to save it here.</div>
                                         ) : (
                                             <div className="space-y-2">
@@ -1034,8 +1029,9 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                 <CardHeader>
                                                     <CardTitle className="text-base">First Service to Offer</CardTitle>
                                                 </CardHeader>
-                                                <CardContent className="space-y-2">
-                                                    <div className="text-sm font-medium">{instant?.firstService?.name ?? "—"}</div>
+                                                <CardContent className="space-y-2 max-h-[320px] overflow-auto">
+
+                                                <div className="text-sm font-medium">{instant?.firstService?.name ?? "—"}</div>
                                                     <div className="text-sm text-muted-foreground">{instant?.firstService?.outcome ?? "—"}</div>
                                                 </CardContent>
                                             </Card>
@@ -1062,6 +1058,15 @@ export default function MicroNicheEngineFrontendPrototype() {
                                             </CardHeader>
                                             <CardContent className="text-sm">{instant.oneActionToday}</CardContent>
                                         </Card>
+                                        {instant && (
+                                            <QuickStart15
+                                                microNiche={instant.microNiche}
+                                                coreProblem={instant.coreProblem}
+                                                serviceName={instant.firstService?.name}
+                                                serviceOutcome={instant.firstService?.outcome}
+                                                buyerPlaces={instant.buyerPlaces}
+                                            />
+                                        )}
 
                                         {/* Full Validation */}
                                         <div ref={deepSectionRef}>
