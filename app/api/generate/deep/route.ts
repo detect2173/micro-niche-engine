@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { verifyDeepProofPass } from "@/app/api/stripe/pass";
 
 export const runtime = "nodejs";
 
@@ -20,6 +21,21 @@ type InstantProof = {
   };
 };
 
+type DeepProof = {
+  whyExists: string;
+  proofSignals: string[];
+  underserved: string;
+  stability: string;
+  executionPath: string[];
+  expansionLater: string[];
+  riskCheck: { risk: string; mitigation: string }[];
+  meta?: {
+    passExpiresAt: number;
+    secondsRemaining: number;
+    passHours: number;
+  };
+};
+
 function mustEnv(name: string) {
   const v = process.env[name];
   if (!v) throw new Error(`Missing env: ${name}`);
@@ -32,6 +48,7 @@ async function stripeGet(path: string) {
     method: "GET",
     headers: { Authorization: `Bearer ${key}` },
   });
+
   const text = await res.text();
   let json: any;
   try {
@@ -39,27 +56,59 @@ async function stripeGet(path: string) {
   } catch {
     json = { raw: text };
   }
+
   if (!res.ok) return { ok: false, status: res.status, json };
   return { ok: true, status: res.status, json };
 }
 
-async function verifyPaid(sessionId: string) {
+const PASS_DURATION_HOURS = 24;
+
+async function verifyPaidAndGetPass(sessionId: string) {
   const expectedPriceId = mustEnv("STRIPE_PRICE_DEEP_PROOF");
 
+  // 1) Session lookup
   const sess = await stripeGet(`/v1/checkout/sessions/${encodeURIComponent(sessionId)}`);
-  if (!sess.ok) return { ok: false, reason: "session_lookup_failed", details: sess.json };
+  if (!sess.ok) return { ok: false as const, reason: "session_lookup_failed", details: sess.json };
 
-  if (sess.json.payment_status !== "paid") {
-    return { ok: false, reason: "not_paid", payment_status: sess.json.payment_status };
+  const paymentStatus = sess.json?.payment_status;
+  if (paymentStatus !== "paid") {
+    return { ok: false as const, reason: "not_paid", payment_status: paymentStatus ?? "unknown" };
   }
 
-  const li = await stripeGet(`/v1/checkout/sessions/${encodeURIComponent(sessionId)}/line_items?limit=10`);
-  if (!li.ok) return { ok: false, reason: "line_items_lookup_failed", details: li.json };
+  // 2) Line items lookup
+  const li = await stripeGet(
+      `/v1/checkout/sessions/${encodeURIComponent(sessionId)}/line_items?limit=10`
+  );
+  if (!li.ok) return { ok: false as const, reason: "line_items_lookup_failed", details: li.json };
 
-  const matches = (li.json.data || []).some((x: any) => x?.price?.id === expectedPriceId);
-  if (!matches) return { ok: false, reason: "wrong_price" };
+  const matches = (li.json?.data || []).some((x: any) => x?.price?.id === expectedPriceId);
+  if (!matches) return { ok: false as const, reason: "wrong_price" };
 
-  return { ok: true };
+  // 3) Pass window (24h from session created)
+  const createdSec = Number(sess.json?.created ?? 0);
+  if (!createdSec) {
+    // Shouldn't happen, but don't explode.
+    return {
+      ok: true as const,
+      passExpiresAt: Date.now() + PASS_DURATION_HOURS * 60 * 60 * 1000,
+      secondsRemaining: PASS_DURATION_HOURS * 60 * 60,
+      passHours: PASS_DURATION_HOURS,
+    };
+  }
+
+  const passExpiresAt = createdSec * 1000 + PASS_DURATION_HOURS * 60 * 60 * 1000;
+  const secondsRemaining = Math.floor((passExpiresAt - Date.now()) / 1000);
+
+  if (secondsRemaining <= 0) {
+    return { ok: false as const, reason: "expired", passExpiresAt, secondsRemaining };
+  }
+
+  return {
+    ok: true as const,
+    passExpiresAt,
+    secondsRemaining,
+    passHours: PASS_DURATION_HOURS,
+  };
 }
 
 async function openaiDeepProof(instant: InstantProof, notes?: string) {
@@ -74,7 +123,7 @@ async function openaiDeepProof(instant: InstantProof, notes?: string) {
   "stability": string,
   "executionPath": string[],
   "expansionLater": string[],
-  "riskCheck": [{"risk": string, "mitigation": string}[]]
+  "riskCheck": [{"risk": string, "mitigation": string}]
 }
 
 Rules:
@@ -84,10 +133,7 @@ Rules:
 - Risks must be real, with practical mitigations.
 `;
 
-  const user = {
-    instant,
-    notes: notes || "",
-  };
+  const user = { instant, notes: notes || "" };
 
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
@@ -107,15 +153,12 @@ Rules:
   });
 
   const json = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    throw new Error(json?.error?.message || "OpenAI request failed");
-  }
+  if (!res.ok) throw new Error(json?.error?.message || "OpenAI request failed");
 
   const content = json?.choices?.[0]?.message?.content;
   if (!content) throw new Error("OpenAI returned empty content");
 
-  // content is JSON string because we forced json_object
-  return JSON.parse(content);
+  return JSON.parse(content) as Omit<DeepProof, "meta">;
 }
 
 export async function POST(req: NextRequest) {
@@ -128,13 +171,26 @@ export async function POST(req: NextRequest) {
     if (!sessionId) return NextResponse.json({ error: "Missing sessionId" }, { status: 400 });
     if (!instant) return NextResponse.json({ error: "Missing instant" }, { status: 400 });
 
-    const paid = await verifyPaid(sessionId);
-    if (!paid.ok) {
-      return NextResponse.json({ error: "Payment required", reason: paid.reason }, { status: 402 });
+    const pass = await verifyPaidAndGetPass(sessionId);
+    if (!pass.ok) {
+      return NextResponse.json(
+          { error: "Payment required", reason: pass.reason },
+          { status: 402 }
+      );
     }
 
     const deep = await openaiDeepProof(instant, notes);
-    return NextResponse.json(deep);
+
+    const out: DeepProof = {
+      ...deep,
+      meta: {
+        passExpiresAt: pass.passExpiresAt,
+        secondsRemaining: pass.secondsRemaining,
+        passHours: pass.passHours,
+      },
+    };
+
+    return NextResponse.json(out);
   } catch (err: any) {
     return NextResponse.json({ error: err?.message || "Unknown error" }, { status: 500 });
   }
