@@ -1,197 +1,147 @@
-import { NextRequest, NextResponse } from "next/server";
+// app/api/generate/deep/route.ts
+import { NextResponse } from "next/server";
 import { verifyDeepProofPass } from "@/app/api/stripe/pass";
 
 export const runtime = "nodejs";
 
-type Confidence = "High" | "Medium" | "Low";
+type DeepProof = {
+    verdict: "BUILD" | "TEST" | "AVOID";
+    why: string;
+    proofSignals: string[];
+    realisticallyPays: {
+        typicalPriceRange: string;
+        clientsFor1kMo: string;
+        realismIn30to60Days: string;
+    };
+    safeTestPlan: string[];
+    firstRealMoveArtifact: {
+        outreachScript: string;
+        searchQuery: string;
+        offerOneLiner: string;
+    };
+    killSwitch: string[];
+    meta?: {
+        passExpiresAt?: number; // ms epoch
+        secondsRemaining?: number;
+        passHours?: number;
+    };
+};
 
 type InstantProof = {
-  microNiche: string;
-  coreProblem: string;
-  firstService: { name: string; outcome: string };
-  buyerPlaces: string[];
-  oneActionToday: string;
-  meta?: {
-    lane: string;
-    confidence: Confidence;
-    confidenceWhy?: string;
-    confidenceDrivers?: string[];
-    confidenceRaise?: string[];
-    gatesPassed: string[];
-  };
+    microNiche: string;
+    coreProblem: string;
+    firstService: { name: string; outcome: string };
+    buyerPlaces: string[];
+    oneActionToday: string;
+    meta?: { lane?: string };
 };
 
-type DeepProof = {
-  whyExists: string;
-  proofSignals: string[];
-  underserved: string;
-  stability: string;
-  executionPath: string[];
-  expansionLater: string[];
-  riskCheck: { risk: string; mitigation: string }[];
-  meta?: {
-    passExpiresAt: number;
-    secondsRemaining: number;
-    passHours: number;
-  };
-};
-
-function mustEnv(name: string) {
-  const v = process.env[name];
-  if (!v) throw new Error(`Missing env: ${name}`);
-  return v;
+function isRecord(v: unknown): v is Record<string, unknown> {
+    return typeof v === "object" && v !== null;
 }
-
-async function stripeGet(path: string) {
-  const key = mustEnv("STRIPE_SECRET_KEY");
-  const res = await fetch(`https://api.stripe.com${path}`, {
-    method: "GET",
-    headers: { Authorization: `Bearer ${key}` },
-  });
-
-  const text = await res.text();
-  let json: any;
-  try {
-    json = JSON.parse(text);
-  } catch {
-    json = { raw: text };
-  }
-
-  if (!res.ok) return { ok: false, status: res.status, json };
-  return { ok: true, status: res.status, json };
+function getString(v: unknown): string | undefined {
+    return typeof v === "string" ? v : undefined;
 }
+function getInstant(v: unknown): InstantProof | null {
+    if (!isRecord(v)) return null;
 
-const PASS_DURATION_HOURS = 24;
+    const microNiche = getString(v.microNiche);
+    const coreProblem = getString(v.coreProblem);
+    const oneActionToday = getString(v.oneActionToday);
 
-async function verifyPaidAndGetPass(sessionId: string) {
-  const expectedPriceId = mustEnv("STRIPE_PRICE_DEEP_PROOF");
+    const firstServiceRaw = (v.firstService ?? null);
+    const firstService =
+        isRecord(firstServiceRaw) && typeof firstServiceRaw.name === "string" && typeof firstServiceRaw.outcome === "string"
+            ? { name: firstServiceRaw.name, outcome: firstServiceRaw.outcome }
+            : null;
 
-  // 1) Session lookup
-  const sess = await stripeGet(`/v1/checkout/sessions/${encodeURIComponent(sessionId)}`);
-  if (!sess.ok) return { ok: false as const, reason: "session_lookup_failed", details: sess.json };
+    const buyerPlaces = Array.isArray(v.buyerPlaces)
+        ? v.buyerPlaces.filter((x): x is string => typeof x === "string")
+        : [];
 
-  const paymentStatus = sess.json?.payment_status;
-  if (paymentStatus !== "paid") {
-    return { ok: false as const, reason: "not_paid", payment_status: paymentStatus ?? "unknown" };
-  }
+    if (!microNiche || !coreProblem || !firstService) return null;
 
-  // 2) Line items lookup
-  const li = await stripeGet(
-      `/v1/checkout/sessions/${encodeURIComponent(sessionId)}/line_items?limit=10`
-  );
-  if (!li.ok) return { ok: false as const, reason: "line_items_lookup_failed", details: li.json };
-
-  const matches = (li.json?.data || []).some((x: any) => x?.price?.id === expectedPriceId);
-  if (!matches) return { ok: false as const, reason: "wrong_price" };
-
-  // 3) Pass window (24h from session created)
-  const createdSec = Number(sess.json?.created ?? 0);
-  if (!createdSec) {
-    // Shouldn't happen, but don't explode.
     return {
-      ok: true as const,
-      passExpiresAt: Date.now() + PASS_DURATION_HOURS * 60 * 60 * 1000,
-      secondsRemaining: PASS_DURATION_HOURS * 60 * 60,
-      passHours: PASS_DURATION_HOURS,
+        microNiche,
+        coreProblem,
+        firstService,
+        buyerPlaces,
+        oneActionToday: oneActionToday ?? "",
+        meta: isRecord(v.meta) && typeof v.meta.lane === "string" ? { lane: v.meta.lane } : undefined,
     };
-  }
-
-  const passExpiresAt = createdSec * 1000 + PASS_DURATION_HOURS * 60 * 60 * 1000;
-  const secondsRemaining = Math.floor((passExpiresAt - Date.now()) / 1000);
-
-  if (secondsRemaining <= 0) {
-    return { ok: false as const, reason: "expired", passExpiresAt, secondsRemaining };
-  }
-
-  return {
-    ok: true as const,
-    passExpiresAt,
-    secondsRemaining,
-    passHours: PASS_DURATION_HOURS,
-  };
 }
 
-async function openaiDeepProof(instant: InstantProof, notes?: string) {
-  const apiKey = mustEnv("OPENAI_API_KEY");
-  const model = process.env.OPENAI_MODEL_DEEP || process.env.OPENAI_MODEL || "gpt-4o-mini";
+export async function POST(req: Request) {
+    const body: unknown = await req.json().catch(() => null);
 
-  const system = `You are the Micro-Niche Engine. Return ONLY valid JSON matching this schema:
-{
-  "whyExists": string,
-  "proofSignals": string[],
-  "underserved": string,
-  "stability": string,
-  "executionPath": string[],
-  "expansionLater": string[],
-  "riskCheck": [{"risk": string, "mitigation": string}]
-}
-
-Rules:
-- Be conservative. No hype. No made-up facts.
-- Proof signals should be things a user could realistically observe (complaints, DIY workarounds, job posts, forums, tool stacks, etc.).
-- Execution path must be a 7–14 day sequence.
-- Risks must be real, with practical mitigations.
-`;
-
-  const user = { instant, notes: notes || "" };
-
-  const res = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model,
-      temperature: 0.4,
-      response_format: { type: "json_object" },
-      messages: [
-        { role: "system", content: system },
-        { role: "user", content: JSON.stringify(user) },
-      ],
-    }),
-  });
-
-  const json = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(json?.error?.message || "OpenAI request failed");
-
-  const content = json?.choices?.[0]?.message?.content;
-  if (!content) throw new Error("OpenAI returned empty content");
-
-  return JSON.parse(content) as Omit<DeepProof, "meta">;
-}
-
-export async function POST(req: NextRequest) {
-  try {
-    const body = await req.json();
-    const sessionId = body?.sessionId as string | undefined;
-    const instant = body?.instant as InstantProof | undefined;
-    const notes = body?.notes as string | undefined;
-
-    if (!sessionId) return NextResponse.json({ error: "Missing sessionId" }, { status: 400 });
-    if (!instant) return NextResponse.json({ error: "Missing instant" }, { status: 400 });
-
-    const pass = await verifyPaidAndGetPass(sessionId);
-    if (!pass.ok) {
-      return NextResponse.json(
-          { error: "Payment required", reason: pass.reason },
-          { status: 402 }
-      );
+    if (!isRecord(body)) {
+        return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 });
     }
 
-    const deep = await openaiDeepProof(instant, notes);
+    const sessionId = getString(body.sessionId) ?? "";
+    const instant = getInstant(body.instant);
+    const notes = getString(body.notes) ?? "";
 
-    const out: DeepProof = {
-      ...deep,
-      meta: {
-        passExpiresAt: pass.passExpiresAt,
-        secondsRemaining: pass.secondsRemaining,
-        passHours: pass.passHours,
-      },
+    if (!instant) {
+        return NextResponse.json({ error: "Missing/invalid instant payload." }, { status: 400 });
+    }
+
+    // ✅ Use the function (fixes unused warning) + enforce paywall
+    const pass = await verifyDeepProofPass(sessionId);
+    if (!pass.ok) {
+        return NextResponse.json({ error: pass.reason ?? "Locked or expired." }, { status: 402 });
+    }
+
+    const niche = instant.microNiche.trim();
+    const problem = instant.coreProblem.trim();
+    const svc = instant.firstService.name.trim();
+    const outcome = instant.firstService.outcome.trim();
+
+    // Paid output spec: decisional, not informational
+    const dp: DeepProof = {
+        verdict: "TEST",
+        why:
+            `This is a real, common pain (${problem}) and the first offer is simple (${svc}). ` +
+            `The main unknown is how quickly you can reach buyers and confirm willingness to pay. ` +
+            (notes ? `Notes considered: ${notes}` : ""),
+        proofSignals: [
+            "Businesses mentioning slow responses / missed calls in reviews",
+            "Job postings for admin/CSR support (proxy for workflow load)",
+            "Public posts asking for recommendations (shows active demand)",
+            "Competitors offering partial solutions (means money is being spent)",
+        ],
+        realisticallyPays: {
+            typicalPriceRange: "$300–$1,200 for setup (plus optional $49–$199/mo for support/optimization)",
+            clientsFor1kMo: "1–3 clients (depending on pricing and whether you include monthly support)",
+            realismIn30to60Days:
+                "Realistic if you can contact 30–60 prospects and run 10–15 short conversations. If you avoid outreach entirely, timeline becomes uncertain.",
+        },
+        safeTestPlan: [
+            "Pick ONE buyer channel from the list and contact 10 prospects (no building yet).",
+            "Ask one diagnostic question and offer a 15-minute call if they say yes.",
+            "If you get 2–3 ‘yes’ signals, build a tiny proof stub (mock flow + screenshot).",
+            "Offer a paid pilot at a clear price with a clear outcome and timeline.",
+            "Stop after 14 days if you can’t get conversations (that’s the real bottleneck).",
+        ],
+        firstRealMoveArtifact: {
+            offerOneLiner: `I help ${niche} solve ${problem.toLowerCase()} with ${svc} so they get ${outcome.toLowerCase()}.`,
+            searchQuery: `"${niche}" "missed calls" OR "no response" OR "never called back"`,
+            outreachScript:
+                `Quick question — are you currently handling ${problem.toLowerCase()} manually, or do you have a system?\n\n` +
+                `If it’s manual, I can set up ${svc} so you get ${outcome.toLowerCase()}. ` +
+                `Worth a 10-minute look, or should I leave you alone forever?`,
+        },
+        killSwitch: [
+            "If you can’t get 5 real conversations after contacting 30 prospects, pause and change the buyer channel or niche.",
+            "If buyers insist they only want ‘done yesterday for free’, stop — price sensitivity is too high.",
+            "If delivery requires heavy customization per client, stop and productize the offer before continuing.",
+        ],
+        meta: {
+            passExpiresAt: pass.passExpiresAt,
+            secondsRemaining: pass.secondsRemaining,
+            passHours: Number(process.env.DEEP_PASS_HOURS ?? 24) || 24,
+        },
     };
 
-    return NextResponse.json(out);
-  } catch (err: any) {
-    return NextResponse.json({ error: err?.message || "Unknown error" }, { status: 500 });
-  }
+    return NextResponse.json(dp);
 }

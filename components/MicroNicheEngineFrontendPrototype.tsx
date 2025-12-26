@@ -51,18 +51,42 @@ type InstantProof = {
     };
 };
 
+type Verdict = "BUILD" | "TEST" | "AVOID";
+
 type DeepProof = {
-    whyExists: string;
-    proofSignals: string[];
-    underserved: string;
-    stability: string;
-    executionPath: string[];
-    expansionLater: string[];
-    riskCheck: { risk: string; mitigation: string }[];
+    verdict: Verdict;
+    verdictReason: string;
+
+    why: {
+        signals: string[];
+        underserved: string;
+        stability: string;
+    };
+
+    money: {
+        typicalPriceRange: string; // e.g. "$300–$800 per client"
+        clientsFor1k: string; // e.g. "2–4 clients"
+        realism30to60Days: string; // short sentence
+    };
+
+    testPlan: {
+        goal: string;
+        method: string;
+        successSignal: string;
+        failureSignal: string;
+        timeCap: string; // e.g. "3–5 hours total"
+    };
+
+    firstMove: {
+        type: "message" | "search" | "post";
+        content: string; // copy/paste artifact
+    };
+
+    killSwitch: string[];
+
     meta?: {
-        passExpiresAt?: number; // ms epoch
+        passExpiresAt?: number;
         secondsRemaining?: number;
-        passHours?: number;
     };
 };
 
@@ -120,7 +144,6 @@ function isRecord(x: unknown): x is Record<string, unknown> {
     return x !== null && typeof x === "object";
 }
 
-
 function getApiErrorMessage(payload: unknown): string | null {
     if (payload === null || typeof payload !== "object") return null;
 
@@ -134,7 +157,6 @@ function getApiErrorMessage(payload: unknown): string | null {
 
     return msg && msg.trim() ? msg : null;
 }
-
 
 function short(s: string, max = 88) {
     if (!s) return s;
@@ -200,7 +222,41 @@ function escapeHtml(s: string) {
 function listHtml(items?: string[]) {
     const arr = Array.isArray(items) ? items : [];
     if (!arr.length) return `<div class="muted">—</div>`;
-    return `<ul>${arr.map((x) => `<li>${escapeHtml(x)}</li>`).join("")}</ul>`;
+    return `<ul>${arr.map((x: string) => `<li>${escapeHtml(x)}</li>`).join("")}</ul>`;
+}
+
+function firstNonEmpty(arr?: (string | null | undefined)[] | null) {
+    return (arr ?? []).map((x) => (x ?? "").trim()).find(Boolean) ?? "";
+}
+
+function buildQuickStart15Steps(x: InstantProof): string[] {
+    const niche = (x.microNiche ?? "").trim();
+    const problem = (x.coreProblem ?? "").trim();
+    const svc = (x.firstService?.name ?? "").trim();
+    const outcome = (x.firstService?.outcome ?? "").trim();
+    const place = firstNonEmpty(x.buyerPlaces);
+
+    // fallback if weak data exists
+    if (!niche || !svc) {
+        return [
+            "Write a 1-sentence offer with a clear outcome + timeframe (e.g., “I can improve X in 7 days”).",
+            "Pick one channel where buyers already hang out (FB groups, LinkedIn, directories) and collect 10 targets.",
+            "Send 5 short messages today: problem → outcome → one question. Track replies in a note.",
+        ];
+    }
+
+    const offer = `I help ${niche}${problem ? ` solve ${problem.toLowerCase()}` : ""} with ${svc}${
+        outcome ? ` so they get ${outcome.toLowerCase()}` : ""
+    }.`;
+
+    return [
+        `Write your one-liner offer: “${offer}”`,
+        place
+            ? `Open ${place} and make a list of 10 prospects. (Look for anyone doing this manually.)`
+            : "Pick one place buyers hang out (FB group, LinkedIn search, Yelp/Google listings) and list 10 prospects.",
+        `Send 5 DMs/emails today: “Quick question — are you currently handling ${problem || "this"} manually, or do you have a system?”`,
+        `Create a 60-second “proof stub” (mockup, screenshot, or Loom) showing what "${svc}" looks like for ${niche}.`,
+    ];
 }
 
 /** -----------------------------
@@ -246,7 +302,7 @@ export default function MicroNicheEngineFrontendPrototype() {
         return saved.some((s) => keyForInstant(s) === k);
     }, [instant, saved]);
 
-    // ✅ Visible History = History minus Saved (prevents redundancy)
+    // Visible History = History minus Saved (prevents redundancy)
     const visibleHistory = useMemo(() => {
         if (!history.length) return [];
         if (!saved.length) return history;
@@ -336,7 +392,7 @@ export default function MicroNicheEngineFrontendPrototype() {
         (async () => {
             try {
                 const r = await fetch(`/api/stripe/verify-session?session_id=${encodeURIComponent(sessionId)}`);
-                const j = (await r.json()) as VerifyResponse;
+                const j = (await safeReadJson(r)) as VerifyResponse;
 
                 setPaidUnlocked(!!j?.paid);
 
@@ -420,7 +476,6 @@ export default function MicroNicheEngineFrontendPrototype() {
         }
     };
 
-
     const onUnlockDeep = async () => {
         if (!instant) return;
 
@@ -447,7 +502,6 @@ export default function MicroNicheEngineFrontendPrototype() {
             setIsUnlocking(false);
         }
     };
-
 
     const onGenerateDeep = async () => {
         if (!instant) return;
@@ -494,47 +548,90 @@ export default function MicroNicheEngineFrontendPrototype() {
         }
     };
 
-
-    function firstNonEmpty(arr?: (string | null | undefined)[] | null) {
-        return (arr ?? []).map((x) => (x ?? "").trim()).find(Boolean) ?? "";
-    }
-
-    function buildQuickStart15Steps(x: InstantProof): string[] {
-        const niche = (x.microNiche ?? "").trim();
-        const problem = (x.coreProblem ?? "").trim();
-        const svc = (x.firstService?.name ?? "").trim();
-        const outcome = (x.firstService?.outcome ?? "").trim();
-        const place = firstNonEmpty(x.buyerPlaces);
-
-        // fallback if weak data exists
-        if (!niche || !svc) {
-            return [
-                "Write a 1-sentence offer with a clear outcome + timeframe (e.g., “I can improve X in 7 days”).",
-                "Pick one channel where buyers already hang out (FB groups, LinkedIn, directories) and collect 10 targets.",
-                "Send 5 short messages today: problem → outcome → one question. Track replies in a note.",
-            ];
-        }
-
-        const offer = `I help ${niche}${problem ? ` solve ${problem.toLowerCase()}` : ""} with ${svc}${
-            outcome ? ` so they get ${outcome.toLowerCase()}` : ""
-        }.`;
-
-        return [
-            `Write your one-liner offer: “${offer}”`,
-            place
-                ? `Open ${place} and make a list of 10 prospects. (Look for anyone doing this manually.)`
-                : "Pick one place buyers hang out (FB group, LinkedIn search, Yelp/Google listings) and list 10 prospects.",
-            `Send 5 DMs/emails today: “Quick question — are you currently handling ${problem || "this"} manually, or do you have a system?”`,
-            `Create a 60-second “proof stub” (mockup, screenshot, or Loom) showing what "${svc}" looks like for ${niche}.`,
-        ];
-    }
-
     const onDownloadPdf = () => {
         if (!instant) return;
 
         const title = `Micro-Niche Report`;
         const subtitle = `${instant.meta?.lane ?? "Lane"} • ${new Date().toLocaleString()}`;
         const quick15 = buildQuickStart15Steps(instant);
+
+        const paidHtml = deep
+            ? `
+  <div style="page-break-before: always;"></div>
+  <div>
+    <span class="chip">Decision-Grade Validation</span>
+    <span class="chip">${escapeHtml(passLabel(true, passExpiresAt, secondsRemaining))}</span>
+  </div>
+
+  <div class="section">
+    <div class="label">Verdict</div>
+    <div><b>${escapeHtml(deep.verdict)}</b></div>
+    <div class="muted">${escapeHtml(deep.verdictReason || "—")}</div>
+  </div>
+
+  <div class="grid">
+    <div class="section">
+      <div class="label">Why (signals)</div>
+      ${
+                Array.isArray(deep.why?.signals) && deep.why.signals.length
+                    ? `<ul>${deep.why.signals.map((s: string) => `<li>${escapeHtml(s)}</li>`).join("")}</ul>`
+                    : `<div class="muted">—</div>`
+            }
+    </div>
+    <div class="section">
+      <div class="label">Underserved</div>
+      <div>${escapeHtml(deep.why?.underserved || "—")}</div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="label">Stability (2–5 years)</div>
+    <div>${escapeHtml(deep.why?.stability || "—")}</div>
+  </div>
+
+  <div class="section">
+    <div class="label">What this realistically pays</div>
+    <ul>
+      <li><b>Typical price:</b> ${escapeHtml(deep.money?.typicalPriceRange || "—")}</li>
+      <li><b>Clients for $1k/mo:</b> ${escapeHtml(deep.money?.clientsFor1k || "—")}</li>
+      <li><b>30–60 day realism:</b> ${escapeHtml(deep.money?.realism30to60Days || "—")}</li>
+    </ul>
+  </div>
+
+  <div class="section">
+    <div class="label">How to test this safely (bounded)</div>
+    <ul>
+      <li><b>Goal:</b> ${escapeHtml(deep.testPlan?.goal || "—")}</li>
+      <li><b>Method:</b> ${escapeHtml(deep.testPlan?.method || "—")}</li>
+      <li><b>Success signal:</b> ${escapeHtml(deep.testPlan?.successSignal || "—")}</li>
+      <li><b>Failure signal:</b> ${escapeHtml(deep.testPlan?.failureSignal || "—")}</li>
+      <li><b>Time cap:</b> ${escapeHtml(deep.testPlan?.timeCap || "—")}</li>
+    </ul>
+  </div>
+
+  <div class="section">
+    <div class="label">Your first real move (copy/paste)</div>
+    <div class="muted">Artifact: ${escapeHtml(deep.firstMove?.type || "—")}</div>
+    <div style="margin-top:8px; white-space: pre-wrap; border: 1px solid #eee; border-radius: 10px; padding: 10px;">
+      ${escapeHtml(deep.firstMove?.content || "—")}
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="label">Kill switch (when to stop)</div>
+    ${
+                Array.isArray(deep.killSwitch) && deep.killSwitch.length
+                    ? `<ul>${deep.killSwitch.map((s: string) => `<li>${escapeHtml(s)}</li>`).join("")}</ul>`
+                    : `<div class="muted">—</div>`
+            }
+  </div>
+`
+            : `
+  <div class="section">
+    <div class="label">Decision-Grade Validation</div>
+    <div class="muted">Not included (free report).</div>
+  </div>
+`;
 
         const html = `<!doctype html>
 <html lang="en">
@@ -596,80 +693,12 @@ export default function MicroNicheEngineFrontendPrototype() {
     <div class="label">If you had 15 minutes</div>
     ${
             Array.isArray(quick15) && quick15.length
-                ? `<ul>${quick15.map((s) => `<li>${escapeHtml(s)}</li>`).join("")}</ul>`
+                ? `<ul>${quick15.map((s: string) => `<li>${escapeHtml(s)}</li>`).join("")}</ul>`
                 : `<div class="muted">—</div>`
         }
   </div>
 
-  ${
-            deep
-                ? `
-  <div style="page-break-before: always;"></div>
-  <div>
-    <span class="chip">Full Validation</span>
-    <span class="chip">${escapeHtml(passLabel(true, passExpiresAt, secondsRemaining))}</span>
-  </div>
-
-  <div class="grid">
-    <div class="section">
-      <div class="label">Why this niche exists</div>
-      <div>${escapeHtml(deep.whyExists || "—")}</div>
-    </div>
-    <div class="section">
-      <div class="label">Why it’s underserved</div>
-      <div>${escapeHtml(deep.underserved || "—")}</div>
-    </div>
-  </div>
-
-  <div class="section">
-    <div class="label">Proof signals used</div>
-    ${listHtml(deep.proofSignals)}
-  </div>
-
-  <div class="section">
-    <div class="label">Why it’s stable (2–5 years)</div>
-    <div>${escapeHtml(deep.stability || "—")}</div>
-  </div>
-
-  <div class="section">
-    <div class="label">Execution path (7–14 days)</div>
-    ${
-                    Array.isArray(deep.executionPath) && deep.executionPath.length
-                        ? `<ol>${deep.executionPath.map((x) => `<li>${escapeHtml(x)}</li>`).join("")}</ol>`
-                        : `<div class="muted">—</div>`
-                }
-  </div>
-
-  <div class="grid">
-    <div class="section">
-      <div class="label">Expansion (later)</div>
-      ${listHtml(deep.expansionLater)}
-    </div>
-    <div class="section">
-      <div class="label">Risk check</div>
-      ${
-                    Array.isArray(deep.riskCheck) && deep.riskCheck.length
-                        ? deep.riskCheck
-                            .map(
-                                (r) => `
-        <div style="border:1px solid #eee;border-radius:10px;padding:10px;margin:8px 0;">
-          <div><b>${escapeHtml(r.risk)}</b></div>
-          <div class="muted">${escapeHtml(r.mitigation)}</div>
-        </div>`
-                            )
-                            .join("")
-                        : `<div class="muted">—</div>`
-                }
-    </div>
-  </div>
-  `
-                : `
-  <div class="section">
-    <div class="label">Full Validation</div>
-    <div class="muted">Not included (free report).</div>
-  </div>
-  `
-        }
+  ${paidHtml}
 
   <script>
     window.onload = () => setTimeout(() => window.print(), 200);
@@ -683,34 +712,29 @@ export default function MicroNicheEngineFrontendPrototype() {
             return;
         }
 
-// Avoid document.write (deprecated). Use DOM APIs instead.
+        // Avoid document.write (deprecated). Use DOM APIs instead.
         w.document.title = title;
 
         const doc = w.document;
 
-// Ensure we have a head/body to work with
+        // Ensure we have a head/body to work with
         const head = doc.head ?? doc.getElementsByTagName("head")[0] ?? doc.createElement("head");
         const body = doc.body ?? doc.getElementsByTagName("body")[0] ?? doc.createElement("body");
 
         if (!doc.head) doc.documentElement.appendChild(head);
         if (!doc.body) doc.documentElement.appendChild(body);
 
-// Parse HTML and replace the document contents cleanly
+        // Parse HTML and replace the document contents cleanly
         const parser = new DOMParser();
         const parsed = parser.parseFromString(html, "text/html");
 
         doc.documentElement.lang = parsed.documentElement.lang || "en";
 
-// Replace head
         head.innerHTML = parsed.head?.innerHTML ?? "";
-
-// Replace body
         body.innerHTML = parsed.body?.innerHTML ?? "";
 
-// Trigger print after content is in place
         w.focus();
         setTimeout(() => w.print(), 250);
-
     };
 
     /** -----------------------------
@@ -758,9 +782,9 @@ export default function MicroNicheEngineFrontendPrototype() {
                                     >
                                         <Sparkles className="h-4 w-4 shrink-0" />
                                         <span className="flex flex-col items-center leading-tight">
-                                            <span>Free Instant Result</span>
-                                            <span className="text-[10px] opacity-50 tracking-wide">Recommended</span>
-                                        </span>
+                      <span>Free Instant Result</span>
+                      <span className="text-[10px] opacity-50 tracking-wide">Recommended</span>
+                    </span>
                                     </Button>
 
                                     <Button
@@ -849,13 +873,13 @@ export default function MicroNicheEngineFrontendPrototype() {
                             <Button className="w-full rounded-2xl" onClick={onGenerate} disabled={!userReady || isGenerating}>
                                 {isGenerating ? (
                                     <span className="flex items-center gap-2">
-                                        <Loader2 className="h-4 w-4 animate-spin" />
-                                        Finding your niche…
-                                    </span>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Finding your niche…
+                  </span>
                                 ) : (
                                     <span className="flex items-center gap-2">
-                                        Find My Micro-Niche <ChevronRight className="h-4 w-4" />
-                                    </span>
+                    Find My Micro-Niche <ChevronRight className="h-4 w-4" />
+                  </span>
                                 )}
                             </Button>
 
@@ -1110,7 +1134,7 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                 <div className="pt-1">
                                                     <div className="text-sm font-medium">What drove the rating</div>
                                                     <ul className="mt-2 list-disc pl-5 text-sm text-muted-foreground space-y-1">
-                                                        {confidenceDrivers.map((d, i) => (
+                                                        {confidenceDrivers.map((d: string, i: number) => (
                                                             <li key={i}>{d}</li>
                                                         ))}
                                                     </ul>
@@ -1121,7 +1145,7 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                 <div className="pt-2">
                                                     <div className="text-sm font-medium">What would raise confidence</div>
                                                     <ul className="mt-2 list-disc pl-5 text-sm text-muted-foreground space-y-1">
-                                                        {confidenceRaise.map((x, i) => (
+                                                        {confidenceRaise.map((x: string, i: number) => (
                                                             <li key={i}>{x}</li>
                                                         ))}
                                                     </ul>
@@ -1157,7 +1181,7 @@ export default function MicroNicheEngineFrontendPrototype() {
                                             <CardContent>
                                                 <ul className="list-disc pl-5 text-sm space-y-1">
                                                     {(instant?.buyerPlaces ?? []).length ? (
-                                                        (instant.buyerPlaces ?? []).map((p, i) => <li key={i}>{p}</li>)
+                                                        (instant.buyerPlaces ?? []).map((p: string, i: number) => <li key={i}>{p}</li>)
                                                     ) : (
                                                         <li className="text-muted-foreground">No buyer locations returned — click “Try another”.</li>
                                                     )}
@@ -1185,9 +1209,9 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                         <p className="text-sm text-muted-foreground">Best for people who don’t want to guess.</p>
 
                                                         <ul className="mt-2 text-sm text-muted-foreground space-y-1">
-                                                            <li>• Confirms whether this niche is actually viable</li>
-                                                            <li>• Shows demand signals and stability (2–5 years)</li>
-                                                            <li>• Flags risks before you invest time or money</li>
+                                                            <li>• Verdict: BUILD / TEST / AVOID</li>
+                                                            <li>• Money anchor + bounded test plan</li>
+                                                            <li>• Copy/paste first move + kill switch</li>
                                                         </ul>
                                                     </div>
 
@@ -1222,9 +1246,9 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                                 <Button className="rounded-2xl" onClick={onUnlockDeep} disabled={!instant || isUnlocking}>
                                                                     {isUnlocking ? (
                                                                         <span className="flex items-center gap-2">
-                                                                            <Loader2 className="h-4 w-4 animate-spin" />
-                                                                            Opening secure checkout…
-                                                                        </span>
+                                      <Loader2 className="h-4 w-4 animate-spin" />
+                                      Opening secure checkout…
+                                    </span>
                                                                     ) : (
                                                                         "Unlock Full Validation"
                                                                     )}
@@ -1236,9 +1260,9 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                                 <Button className="rounded-2xl" onClick={onGenerateDeep} disabled={!instant || isDeepLoading}>
                                                                     {isDeepLoading ? (
                                                                         <span className="flex items-center gap-2">
-                                                                            <Loader2 className="h-4 w-4 animate-spin" />
-                                                                            Running validation…
-                                                                        </span>
+                                      <Loader2 className="h-4 w-4 animate-spin" />
+                                      Running validation…
+                                    </span>
                                                                     ) : (
                                                                         "Run Full Validation"
                                                                     )}
@@ -1258,79 +1282,48 @@ export default function MicroNicheEngineFrontendPrototype() {
                                             </div>
                                         ) : null}
 
+                                        {/* Paid Report (only when deep exists) */}
                                         <AnimatePresence mode="wait">
                                             {deep ? (
                                                 <motion.div
-                                                    key="deep"
+                                                    key="paid"
                                                     initial={{ opacity: 0, y: 10 }}
                                                     animate={{ opacity: 1, y: 0 }}
                                                     exit={{ opacity: 0, y: -10 }}
                                                     className="space-y-4"
                                                 >
                                                     <div className="flex items-center gap-2">
-                                                        <Badge className="rounded-full">Full Validation</Badge>
+                                                        <Badge className="rounded-full">Decision-Grade Validation</Badge>
                                                         <Badge variant="secondary" className="rounded-full">
-                                                            Same niche
+                                                            Verdict: {deep.verdict}
                                                         </Badge>
                                                     </div>
 
-                                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                                        <Card className="rounded-2xl">
-                                                            <CardHeader>
-                                                                <CardTitle className="text-base">Why this niche exists</CardTitle>
-                                                            </CardHeader>
-                                                            <CardContent className="text-sm text-muted-foreground leading-relaxed">{deep.whyExists}</CardContent>
-                                                        </Card>
-
-                                                        <Card className="rounded-2xl">
-                                                            <CardHeader>
-                                                                <CardTitle className="text-base">Why it’s underserved</CardTitle>
-                                                            </CardHeader>
-                                                            <CardContent className="text-sm text-muted-foreground leading-relaxed">{deep.underserved}</CardContent>
-                                                        </Card>
-                                                    </div>
-
-                                                    <Card className="rounded-2xl">
+                                                    {/* 1) Verdict */}
+                                                    <Card className="rounded-2xl border-2">
                                                         <CardHeader>
-                                                            <CardTitle className="text-base">Proof signals used</CardTitle>
+                                                            <CardTitle className="text-base">Verdict</CardTitle>
                                                         </CardHeader>
-                                                        <CardContent>
-                                                            <ul className="list-disc pl-5 text-sm space-y-1">
-                                                                {deep.proofSignals.map((s, i) => (
-                                                                    <li key={i}>{s}</li>
-                                                                ))}
-                                                            </ul>
+                                                        <CardContent className="space-y-2">
+                                                            <div className="text-sm">
+                                                                <span className="font-medium">Decision:</span>{" "}
+                                                                <span className="font-semibold">{deep.verdict}</span>
+                                                            </div>
+                                                            <div className="text-sm text-muted-foreground leading-relaxed">
+                                                                {deep.verdictReason}
+                                                            </div>
                                                         </CardContent>
                                                     </Card>
 
-                                                    <Card className="rounded-2xl">
-                                                        <CardHeader>
-                                                            <CardTitle className="text-base">Why it’s stable (2–5 years)</CardTitle>
-                                                        </CardHeader>
-                                                        <CardContent className="text-sm text-muted-foreground leading-relaxed">{deep.stability}</CardContent>
-                                                    </Card>
-
-                                                    <Card className="rounded-2xl">
-                                                        <CardHeader>
-                                                            <CardTitle className="text-base">Execution path (7–14 days)</CardTitle>
-                                                        </CardHeader>
-                                                        <CardContent>
-                                                            <ol className="list-decimal pl-5 text-sm space-y-1">
-                                                                {deep.executionPath.map((s, i) => (
-                                                                    <li key={i}>{s}</li>
-                                                                ))}
-                                                            </ol>
-                                                        </CardContent>
-                                                    </Card>
-
+                                                    {/* 2) Why */}
                                                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                                         <Card className="rounded-2xl">
                                                             <CardHeader>
-                                                                <CardTitle className="text-base">Expansion (later)</CardTitle>
+                                                                <CardTitle className="text-base">Why (signals)</CardTitle>
                                                             </CardHeader>
-                                                            <CardContent>
-                                                                <ul className="list-disc pl-5 text-sm space-y-1">
-                                                                    {deep.expansionLater.map((s, i) => (
+                                                            <CardContent className="space-y-3">
+                                                                <ul className="list-disc pl-5 text-sm text-muted-foreground space-y-1">
+                                                                    {(deep.why.signals ?? []).map((s: string, i: number) => (
                                                                         <li key={i}>{s}</li>
                                                                     ))}
                                                                 </ul>
@@ -1339,18 +1332,110 @@ export default function MicroNicheEngineFrontendPrototype() {
 
                                                         <Card className="rounded-2xl">
                                                             <CardHeader>
-                                                                <CardTitle className="text-base">Risk check</CardTitle>
+                                                                <CardTitle className="text-base">Underserved + Stability</CardTitle>
                                                             </CardHeader>
-                                                            <CardContent className="space-y-2">
-                                                                {deep.riskCheck.map((r, i) => (
-                                                                    <div key={i} className="rounded-2xl border p-3">
-                                                                        <div className="text-sm font-medium">{r.risk}</div>
-                                                                        <div className="text-sm text-muted-foreground">{r.mitigation}</div>
+                                                            <CardContent className="space-y-3">
+                                                                <div>
+                                                                    <div className="text-sm font-medium">Why it’s underserved</div>
+                                                                    <div className="text-sm text-muted-foreground leading-relaxed">
+                                                                        {deep.why.underserved}
                                                                     </div>
-                                                                ))}
+                                                                </div>
+                                                                <div>
+                                                                    <div className="text-sm font-medium">Why it’s stable (2–5 years)</div>
+                                                                    <div className="text-sm text-muted-foreground leading-relaxed">
+                                                                        {deep.why.stability}
+                                                                    </div>
+                                                                </div>
                                                             </CardContent>
                                                         </Card>
                                                     </div>
+
+                                                    {/* 3) Money */}
+                                                    <Card className="rounded-2xl">
+                                                        <CardHeader>
+                                                            <CardTitle className="text-base">What this realistically pays</CardTitle>
+                                                        </CardHeader>
+                                                        <CardContent className="space-y-2">
+                                                            <div className="text-sm">
+                                                                <span className="font-medium">Typical first offer price:</span>{" "}
+                                                                <span className="text-muted-foreground">{deep.money.typicalPriceRange}</span>
+                                                            </div>
+                                                            <div className="text-sm">
+                                                                <span className="font-medium">Clients for $1,000/month:</span>{" "}
+                                                                <span className="text-muted-foreground">{deep.money.clientsFor1k}</span>
+                                                            </div>
+                                                            <div className="text-sm">
+                                                                <span className="font-medium">30–60 day realism:</span>{" "}
+                                                                <span className="text-muted-foreground">{deep.money.realism30to60Days}</span>
+                                                            </div>
+                                                        </CardContent>
+                                                    </Card>
+
+                                                    {/* 4) Test Plan */}
+                                                    <Card className="rounded-2xl">
+                                                        <CardHeader>
+                                                            <CardTitle className="text-base">How to test this safely (bounded)</CardTitle>
+                                                        </CardHeader>
+                                                        <CardContent className="space-y-2">
+                                                            <div className="text-sm">
+                                                                <span className="font-medium">Goal:</span>{" "}
+                                                                <span className="text-muted-foreground">{deep.testPlan.goal}</span>
+                                                            </div>
+                                                            <div className="text-sm">
+                                                                <span className="font-medium">Method:</span>{" "}
+                                                                <span className="text-muted-foreground">{deep.testPlan.method}</span>
+                                                            </div>
+                                                            <div className="text-sm">
+                                                                <span className="font-medium">Success signal:</span>{" "}
+                                                                <span className="text-muted-foreground">{deep.testPlan.successSignal}</span>
+                                                            </div>
+                                                            <div className="text-sm">
+                                                                <span className="font-medium">Failure signal:</span>{" "}
+                                                                <span className="text-muted-foreground">{deep.testPlan.failureSignal}</span>
+                                                            </div>
+                                                            <div className="text-sm">
+                                                                <span className="font-medium">Time cap:</span>{" "}
+                                                                <span className="text-muted-foreground">{deep.testPlan.timeCap}</span>
+                                                            </div>
+                                                        </CardContent>
+                                                    </Card>
+
+                                                    {/* 5) First move */}
+                                                    <Card className="rounded-2xl border-2">
+                                                        <CardHeader>
+                                                            <CardTitle className="text-base">Your first real move (copy/paste)</CardTitle>
+                                                        </CardHeader>
+                                                        <CardContent className="space-y-3">
+                                                            <Badge variant="outline" className="rounded-full w-fit">
+                                                                Artifact: {deep.firstMove.type}
+                                                            </Badge>
+
+                                                            <div className="rounded-2xl border bg-muted/30 p-3">
+                                <pre className="whitespace-pre-wrap text-sm leading-relaxed">
+                                  {deep.firstMove.content}
+                                </pre>
+                                                            </div>
+
+                                                            <div className="text-xs text-muted-foreground">
+                                                                Tip: personalize 1–2 details, then send it to 10 targets.
+                                                            </div>
+                                                        </CardContent>
+                                                    </Card>
+
+                                                    {/* 6) Kill switch */}
+                                                    <Card className="rounded-2xl">
+                                                        <CardHeader>
+                                                            <CardTitle className="text-base">Kill switch (when to stop)</CardTitle>
+                                                        </CardHeader>
+                                                        <CardContent>
+                                                            <ul className="list-disc pl-5 text-sm text-muted-foreground space-y-1">
+                                                                {(deep.killSwitch ?? []).map((s: string, i: number) => (
+                                                                    <li key={i}>{s}</li>
+                                                                ))}
+                                                            </ul>
+                                                        </CardContent>
+                                                    </Card>
                                                 </motion.div>
                                             ) : null}
                                         </AnimatePresence>

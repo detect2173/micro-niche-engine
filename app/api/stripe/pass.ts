@@ -1,131 +1,70 @@
 // app/api/stripe/pass.ts
-export type PassVerifyResult =
-    | {
-    ok: true;
-    paid: true;
-    passExpiresAt: number;        // epoch ms (UI-friendly)
-    passExpiresAtIso: string;     // optional ISO
-    secondsRemaining: number;     // integer >= 0
-    passHours: number;
-}
-    | {
-    ok: true;
-    paid: false;
-    reason: string;
-    payment_status?: string;
-    passHours: number;
-}
-    | {
-    ok: false;
-    paid: false;
-    reason: string;
-    passHours: number;
+import type Stripe from "stripe";
+import { stripe } from "@/lib/mne/stripe";
+
+export type DeepPassStatus = {
+    ok: boolean;
+    paid: boolean;
+    passExpiresAt?: number; // epoch ms
+    secondsRemaining?: number;
+    reason?: string;
 };
 
-function mustEnv(name: string) {
-    const v = process.env[name];
-    if (!v) throw new Error(`Missing env: ${name}`);
-    return v;
+function getPassHours(): number {
+    const raw = process.env.DEEP_PASS_HOURS;
+    const n = raw ? Number(raw) : 24;
+    return Number.isFinite(n) && n > 0 ? n : 24;
 }
 
-async function stripeGet(path: string) {
-    const key = mustEnv("STRIPE_SECRET_KEY");
-    const res = await fetch(`https://api.stripe.com${path}`, {
-        method: "GET",
-        headers: { Authorization: `Bearer ${key}` },
-    });
+function computePassExpiresAtFromSession(session: Stripe.Checkout.Session): number | undefined {
+    // Stripe 'created' is seconds since epoch
+    const createdSec = typeof session.created === "number" ? session.created : undefined;
+    if (!createdSec) return undefined;
+    return (createdSec + getPassHours() * 3600) * 1000;
+}
 
-    const text = await res.text();
-    let json: any;
-    try {
-        json = JSON.parse(text);
-    } catch {
-        json = { raw: text };
+export async function verifyDeepProofPass(sessionId: string): Promise<DeepPassStatus> {
+    if (!sessionId || !sessionId.trim()) {
+        return { ok: false, paid: false, reason: "Missing session_id" };
     }
 
-    if (!res.ok) return { ok: false as const, status: res.status, json };
-    return { ok: true as const, status: res.status, json };
-}
-
-export async function verifyDeepProofPass(opts: {
-    sessionId: string;
-    expectedPriceId: string;
-    passHours?: number;
-}): Promise<PassVerifyResult> {
-    const passHours = opts.passHours ?? 24;
-
+    let session: Stripe.Checkout.Session;
     try {
-        const sessionId = (opts.sessionId || "").trim();
-        if (!sessionId) {
-            return { ok: true, paid: false, reason: "missing_session_id", passHours };
-        }
+        session = await stripe.checkout.sessions.retrieve(sessionId);
+    } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return { ok: false, paid: false, reason: `Stripe retrieve failed: ${msg}` };
+    }
 
-        const sid = encodeURIComponent(sessionId);
+    const paid = session.payment_status === "paid";
+    const expiresAt = computePassExpiresAtFromSession(session);
+    const secondsRemaining =
+        typeof expiresAt === "number" ? Math.floor((expiresAt - Date.now()) / 1000) : undefined;
 
-        // 1) Lookup session
-        const sess = await stripeGet(`/v1/checkout/sessions/${sid}`);
-        if (!sess.ok) {
-            return { ok: true, paid: false, reason: "session_lookup_failed", passHours };
-        }
-
-        const paymentStatus = sess.json?.payment_status ?? "unknown";
-        if (paymentStatus !== "paid") {
-            return {
-                ok: true,
-                paid: false,
-                reason: "not_paid",
-                payment_status: paymentStatus,
-                passHours,
-            };
-        }
-
-        // 2) Validate line item price
-        const li = await stripeGet(`/v1/checkout/sessions/${sid}/line_items?limit=10`);
-        if (!li.ok) {
-            return { ok: true, paid: false, reason: "line_items_lookup_failed", passHours };
-        }
-
-        const matchesPrice = (li.json?.data || []).some(
-            (x: any) => x?.price?.id === opts.expectedPriceId
-        );
-
-        if (!matchesPrice) {
-            return { ok: true, paid: false, reason: "wrong_price", passHours };
-        }
-
-        // 3) Compute expiry from session creation (unix seconds)
-        const createdSec = Number(sess.json?.created ?? 0);
-        if (!createdSec) {
-            // paid, but cannot compute expiry
-            return { ok: true, paid: false, reason: "missing_created_timestamp", passHours };
-        }
-
-        const passExpiresAt =
-            createdSec * 1000 + passHours * 60 * 60 * 1000;
-
-        const secondsRemaining = Math.max(
-            0,
-            Math.floor((passExpiresAt - Date.now()) / 1000)
-        );
-
-        if (secondsRemaining <= 0) {
-            return { ok: true, paid: false, reason: "expired", passHours };
-        }
-
-        return {
-            ok: true,
-            paid: true,
-            passExpiresAt,
-            passExpiresAtIso: new Date(passExpiresAt).toISOString(),
-            secondsRemaining,
-            passHours,
-        };
-    } catch (err: any) {
+    if (!paid) {
         return {
             ok: false,
             paid: false,
-            reason: err?.message || "error",
-            passHours,
+            passExpiresAt: expiresAt,
+            secondsRemaining,
+            reason: "Not paid",
         };
     }
+
+    if (typeof secondsRemaining === "number" && secondsRemaining <= 0) {
+        return {
+            ok: false,
+            paid: false,
+            passExpiresAt: expiresAt,
+            secondsRemaining,
+            reason: "Expired",
+        };
+    }
+
+    return {
+        ok: true,
+        paid: true,
+        passExpiresAt: expiresAt,
+        secondsRemaining,
+    };
 }
