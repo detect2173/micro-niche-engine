@@ -23,8 +23,9 @@ export async function POST(req: Request) {
     try {
         const baseUrl = getBaseUrl(req);
 
-        const successUrl = `${baseUrl}/?session_id={CHECKOUT_SESSION_ID}`;
-        const cancelUrl = `${baseUrl}/`;
+        const successUrl = `${baseUrl}/?paid=1&session_id={CHECKOUT_SESSION_ID}`;
+        const cancelUrl = `${baseUrl}/?canceled=1`;
+
 
         const priceId = process.env.STRIPE_PRICE_ID?.trim();
 

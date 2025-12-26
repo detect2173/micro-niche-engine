@@ -4,22 +4,36 @@ import { verifyDeepProofPass } from "@/app/api/stripe/pass";
 
 export const runtime = "nodejs";
 
+/** -----------------------------
+ * Types (match frontend DeepProof)
+ * ----------------------------- */
+
 type DeepProof = {
-    verdict: "BUILD" | "TEST" | "AVOID";
-    why: string;
-    proofSignals: string[];
-    realisticallyPays: {
-        typicalPriceRange: string;
-        clientsFor1kMo: string;
-        realismIn30to60Days: string;
+    verdict?: "BUILD" | "TEST" | "AVOID";
+    why?: {
+        summary?: string;
+        signals?: string[];
+        underserved?: string;
+        stability?: string;
     };
-    safeTestPlan: string[];
-    firstRealMoveArtifact: {
-        outreachScript: string;
-        searchQuery: string;
-        offerOneLiner: string;
+    money?: {
+        typicalPriceRange?: string;
+        clientsFor1k?: string;
+        realism30to60Days?: string;
     };
-    killSwitch: string[];
+    testPlan?: {
+        goal?: string;
+        method?: string;
+        successSignal?: string;
+        failureSignal?: string;
+        timeCap?: string;
+    };
+    firstMove?: {
+        type?: string;
+        title?: string;
+        content?: string;
+    };
+    killSwitch?: string[];
     meta?: {
         passExpiresAt?: number; // ms epoch
         secondsRemaining?: number;
@@ -36,12 +50,22 @@ type InstantProof = {
     meta?: { lane?: string };
 };
 
+/** -----------------------------
+ * Narrow parsing helpers
+ * ----------------------------- */
+
 function isRecord(v: unknown): v is Record<string, unknown> {
     return typeof v === "object" && v !== null;
 }
+
 function getString(v: unknown): string | undefined {
     return typeof v === "string" ? v : undefined;
 }
+
+function getStringArray(v: unknown): string[] {
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+}
+
 function getInstant(v: unknown): InstantProof | null {
     if (!isRecord(v)) return null;
 
@@ -49,15 +73,15 @@ function getInstant(v: unknown): InstantProof | null {
     const coreProblem = getString(v.coreProblem);
     const oneActionToday = getString(v.oneActionToday);
 
-    const firstServiceRaw = (v.firstService ?? null);
+    const firstServiceRaw = v.firstService;
     const firstService =
-        isRecord(firstServiceRaw) && typeof firstServiceRaw.name === "string" && typeof firstServiceRaw.outcome === "string"
+        isRecord(firstServiceRaw) &&
+        typeof firstServiceRaw.name === "string" &&
+        typeof firstServiceRaw.outcome === "string"
             ? { name: firstServiceRaw.name, outcome: firstServiceRaw.outcome }
             : null;
 
-    const buyerPlaces = Array.isArray(v.buyerPlaces)
-        ? v.buyerPlaces.filter((x): x is string => typeof x === "string")
-        : [];
+    const buyerPlaces = getStringArray(v.buyerPlaces);
 
     if (!microNiche || !coreProblem || !firstService) return null;
 
@@ -71,6 +95,14 @@ function getInstant(v: unknown): InstantProof | null {
     };
 }
 
+function firstNonEmpty(arr?: string[]): string {
+    return (arr ?? []).map((x) => x.trim()).find(Boolean) ?? "";
+}
+
+/** -----------------------------
+ * Route
+ * ----------------------------- */
+
 export async function POST(req: Request) {
     const body: unknown = await req.json().catch(() => null);
 
@@ -78,15 +110,15 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 });
     }
 
-    const sessionId = getString(body.sessionId) ?? "";
+    const sessionId = (getString(body.sessionId) ?? "").trim();
     const instant = getInstant(body.instant);
-    const notes = getString(body.notes) ?? "";
+    const notes = (getString(body.notes) ?? "").trim();
 
     if (!instant) {
         return NextResponse.json({ error: "Missing/invalid instant payload." }, { status: 400 });
     }
 
-    // ✅ Use the function (fixes unused warning) + enforce paywall
+    // Enforce paywall
     const pass = await verifyDeepProofPass(sessionId);
     if (!pass.ok) {
         return NextResponse.json({ error: pass.reason ?? "Locked or expired." }, { status: 402 });
@@ -96,46 +128,78 @@ export async function POST(req: Request) {
     const problem = instant.coreProblem.trim();
     const svc = instant.firstService.name.trim();
     const outcome = instant.firstService.outcome.trim();
+    const place = firstNonEmpty(instant.buyerPlaces);
 
-    // Paid output spec: decisional, not informational
+    /**
+     * Decide verdict (simple + honest heuristic)
+     * You can evolve this later with real signal scoring.
+     */
+    const verdict: DeepProof["verdict"] =
+        niche.length > 12 && problem.length > 12 && svc.length > 6 ? "TEST" : "AVOID";
+
+    const whySummary =
+        verdict === "AVOID"
+            ? `This idea is too under-specified to invest time/money confidently. Tighten the niche or clarify the first offer.`
+            : `The pain (“${problem}”) is common enough to test quickly, and the offer (“${svc}”) is simple to prototype. The only real unknown is buyer access and willingness to pay.`;
+
     const dp: DeepProof = {
-        verdict: "TEST",
-        why:
-            `This is a real, common pain (${problem}) and the first offer is simple (${svc}). ` +
-            `The main unknown is how quickly you can reach buyers and confirm willingness to pay. ` +
-            (notes ? `Notes considered: ${notes}` : ""),
-        proofSignals: [
-            "Businesses mentioning slow responses / missed calls in reviews",
-            "Job postings for admin/CSR support (proxy for workflow load)",
-            "Public posts asking for recommendations (shows active demand)",
-            "Competitors offering partial solutions (means money is being spent)",
-        ],
-        realisticallyPays: {
-            typicalPriceRange: "$300–$1,200 for setup (plus optional $49–$199/mo for support/optimization)",
-            clientsFor1kMo: "1–3 clients (depending on pricing and whether you include monthly support)",
-            realismIn30to60Days:
-                "Realistic if you can contact 30–60 prospects and run 10–15 short conversations. If you avoid outreach entirely, timeline becomes uncertain.",
+        verdict,
+
+        why: {
+            summary: notes ? `${whySummary} Notes considered: ${notes}` : whySummary,
+            signals: [
+                "Reviews mentioning slow response times, missed calls, or follow-ups slipping",
+                "Job postings for admin/CSR support (proxy for recurring workflow load)",
+                "Public posts asking for recommendations (active demand signal)",
+                "Existing competitors selling partial solutions (buyers already spend money here)",
+            ],
+            underserved:
+                "Most solutions are either too generic (one-size-fits-all) or require heavy setup. A tight, outcome-driven first offer can win quickly.",
+            stability:
+                "Operational and communication problems don’t disappear with trends. As long as customers expect fast responses, this remains a durable pain (2–5 years).",
         },
-        safeTestPlan: [
-            "Pick ONE buyer channel from the list and contact 10 prospects (no building yet).",
-            "Ask one diagnostic question and offer a 15-minute call if they say yes.",
-            "If you get 2–3 ‘yes’ signals, build a tiny proof stub (mock flow + screenshot).",
-            "Offer a paid pilot at a clear price with a clear outcome and timeline.",
-            "Stop after 14 days if you can’t get conversations (that’s the real bottleneck).",
-        ],
-        firstRealMoveArtifact: {
-            offerOneLiner: `I help ${niche} solve ${problem.toLowerCase()} with ${svc} so they get ${outcome.toLowerCase()}.`,
-            searchQuery: `"${niche}" "missed calls" OR "no response" OR "never called back"`,
-            outreachScript:
+
+        money: {
+            typicalPriceRange: "$300–$1,200 for setup (optional $49–$199/mo support/optimization)",
+            clientsFor1k: "1–3 clients (depending on your price + whether you include a monthly support component)",
+            realism30to60Days:
+                "Realistic if you contact ~30–60 prospects and can get 10–15 short conversations. If you avoid outreach entirely, timeline becomes uncertain.",
+        },
+
+        testPlan: {
+            goal: "Validate willingness-to-pay without building anything heavy.",
+            method:
+                "Pick one buyer channel, run a 10–15 message outreach sprint, and sell a paid pilot before building full implementation.",
+            successSignal:
+                "2–3 prospects say ‘yes’ to a short call AND at least 1 agrees to a paid pilot at your stated price.",
+            failureSignal:
+                "After ~30 contacts you can’t get 5 real conversations OR everyone price-pushes to free.",
+            timeCap: "14 days max for validation. If it doesn’t move, pivot the channel or niche.",
+        },
+
+        firstMove: {
+            type: "Outreach Script + Search Query",
+            title: "Your first real move (copy/paste)",
+            content:
+                `ONE-LINER OFFER:\n` +
+                `I help ${niche} solve ${problem.toLowerCase()} with ${svc} so they get ${outcome.toLowerCase()}.\n\n` +
+                `SEARCH QUERY (find pain in the wild):\n` +
+                (place
+                    ? `${place} + "${niche}" + ( "missed calls" OR "no response" OR "never called back" )`
+                    : `"${niche}" ( "missed calls" OR "no response" OR "never called back" )`) +
+                `\n\n` +
+                `OUTREACH DM:\n` +
                 `Quick question — are you currently handling ${problem.toLowerCase()} manually, or do you have a system?\n\n` +
-                `If it’s manual, I can set up ${svc} so you get ${outcome.toLowerCase()}. ` +
+                `If it’s manual, I can set up ${svc} so you get ${outcome.toLowerCase()}.\n` +
                 `Worth a 10-minute look, or should I leave you alone forever?`,
         },
+
         killSwitch: [
-            "If you can’t get 5 real conversations after contacting 30 prospects, pause and change the buyer channel or niche.",
-            "If buyers insist they only want ‘done yesterday for free’, stop — price sensitivity is too high.",
-            "If delivery requires heavy customization per client, stop and productize the offer before continuing.",
+            "If you can’t get 5 real conversations after contacting ~30 prospects, pause and change the buyer channel or niche.",
+            "If buyers only want it free/‘done yesterday’, stop — price sensitivity is too high for a simple solo offer.",
+            "If delivery requires heavy customization for every client, stop and productize the offer before scaling outreach.",
         ],
+
         meta: {
             passExpiresAt: pass.passExpiresAt,
             secondsRemaining: pass.secondsRemaining,
