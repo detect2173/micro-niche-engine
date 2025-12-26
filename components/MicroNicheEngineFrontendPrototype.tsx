@@ -51,42 +51,47 @@ type InstantProof = {
     };
 };
 
-type Verdict = "BUILD" | "TEST" | "AVOID";
-
 type DeepProof = {
-    verdict: Verdict;
-    verdictReason: string;
+    verdict?: "BUILD" | "TEST" | "AVOID";
 
-    why: {
-        signals: string[];
-        underserved: string;
-        stability: string;
+    // 2) Why (supporting signals, concise)
+    why?: {
+        summary?: string;
+        signals?: string[];
+        underserved?: string;
+        stability?: string;
     };
 
-    money: {
-        typicalPriceRange: string; // e.g. "$300–$800 per client"
-        clientsFor1k: string; // e.g. "2–4 clients"
-        realism30to60Days: string; // short sentence
+    // 3) Money anchor
+    money?: {
+        typicalPriceRange?: string;
+        clientsFor1k?: string;
+        realism30to60Days?: string;
     };
 
-    testPlan: {
-        goal: string;
-        method: string;
-        successSignal: string;
-        failureSignal: string;
-        timeCap: string; // e.g. "3–5 hours total"
+    // 4) How to test safely (bounded)
+    testPlan?: {
+        goal?: string;
+        method?: string;
+        successSignal?: string;
+        failureSignal?: string;
+        timeCap?: string;
     };
 
-    firstMove: {
-        type: "message" | "search" | "post";
-        content: string; // copy/paste artifact
+    // 5) Your first real move (artifact)
+    firstMove?: {
+        type?: string;
+        title?: string;
+        content?: string;
     };
 
-    killSwitch: string[];
+    // 6) Kill switch (when to stop)
+    killSwitch?: string[];
 
     meta?: {
-        passExpiresAt?: number;
+        passExpiresAt?: number; // ms epoch
         secondsRemaining?: number;
+        passHours?: number;
     };
 };
 
@@ -565,8 +570,9 @@ export default function MicroNicheEngineFrontendPrototype() {
 
   <div class="section">
     <div class="label">Verdict</div>
-    <div><b>${escapeHtml(deep.verdict)}</b></div>
-    <div class="muted">${escapeHtml(deep.verdictReason || "—")}</div>
+    <div><b>${escapeHtml(deep.verdict ?? "—")
+            }</b></div>
+    <div class="muted">${escapeHtml(deep.why?.summary || "—")}</div>
   </div>
 
   <div class="grid">
@@ -1310,7 +1316,7 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                                 <span className="font-semibold">{deep.verdict}</span>
                                                             </div>
                                                             <div className="text-sm text-muted-foreground leading-relaxed">
-                                                                {deep.verdictReason}
+                                                                {deep.verdict ?? "—"}
                                                             </div>
                                                         </CardContent>
                                                     </Card>
@@ -1323,7 +1329,7 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                             </CardHeader>
                                                             <CardContent className="space-y-3">
                                                                 <ul className="list-disc pl-5 text-sm text-muted-foreground space-y-1">
-                                                                    {(deep.why.signals ?? []).map((s: string, i: number) => (
+                                                                    {(deep.why?.signals ?? []).map((s: string, i: number) => (
                                                                         <li key={i}>{s}</li>
                                                                     ))}
                                                                 </ul>
@@ -1338,13 +1344,15 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                                 <div>
                                                                     <div className="text-sm font-medium">Why it’s underserved</div>
                                                                     <div className="text-sm text-muted-foreground leading-relaxed">
-                                                                        {deep.why.underserved}
+                                                                        {deep.why?.underserved ?? "—"}
+
                                                                     </div>
                                                                 </div>
                                                                 <div>
                                                                     <div className="text-sm font-medium">Why it’s stable (2–5 years)</div>
                                                                     <div className="text-sm text-muted-foreground leading-relaxed">
-                                                                        {deep.why.stability}
+                                                                        {deep.why?.stability ?? "—"}
+
                                                                     </div>
                                                                 </div>
                                                             </CardContent>
@@ -1359,16 +1367,17 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                         <CardContent className="space-y-2">
                                                             <div className="text-sm">
                                                                 <span className="font-medium">Typical first offer price:</span>{" "}
-                                                                <span className="text-muted-foreground">{deep.money.typicalPriceRange}</span>
+                                                                <span className="text-muted-foreground">{deep.money?.typicalPriceRange ?? "—"}</span>
                                                             </div>
                                                             <div className="text-sm">
                                                                 <span className="font-medium">Clients for $1,000/month:</span>{" "}
-                                                                <span className="text-muted-foreground">{deep.money.clientsFor1k}</span>
+                                                                <span className="text-muted-foreground">{deep.money?.clientsFor1k ?? "—"}</span>
                                                             </div>
                                                             <div className="text-sm">
                                                                 <span className="font-medium">30–60 day realism:</span>{" "}
-                                                                <span className="text-muted-foreground">{deep.money.realism30to60Days}</span>
+                                                                <span className="text-muted-foreground">{deep.money?.realism30to60Days ?? "—"}</span>
                                                             </div>
+
                                                         </CardContent>
                                                     </Card>
 
@@ -1380,24 +1389,25 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                         <CardContent className="space-y-2">
                                                             <div className="text-sm">
                                                                 <span className="font-medium">Goal:</span>{" "}
-                                                                <span className="text-muted-foreground">{deep.testPlan.goal}</span>
+                                                                <span className="text-muted-foreground">{deep.testPlan?.goal ?? "—"}</span>
                                                             </div>
                                                             <div className="text-sm">
                                                                 <span className="font-medium">Method:</span>{" "}
-                                                                <span className="text-muted-foreground">{deep.testPlan.method}</span>
+                                                                <span className="text-muted-foreground">{deep.testPlan?.method ?? "—"}</span>
                                                             </div>
                                                             <div className="text-sm">
                                                                 <span className="font-medium">Success signal:</span>{" "}
-                                                                <span className="text-muted-foreground">{deep.testPlan.successSignal}</span>
+                                                                <span className="text-muted-foreground">{deep.testPlan?.successSignal ?? "—"}</span>
                                                             </div>
                                                             <div className="text-sm">
                                                                 <span className="font-medium">Failure signal:</span>{" "}
-                                                                <span className="text-muted-foreground">{deep.testPlan.failureSignal}</span>
+                                                                <span className="text-muted-foreground">{deep.testPlan?.failureSignal ?? "—"}</span>
                                                             </div>
                                                             <div className="text-sm">
                                                                 <span className="font-medium">Time cap:</span>{" "}
-                                                                <span className="text-muted-foreground">{deep.testPlan.timeCap}</span>
+                                                                <span className="text-muted-foreground">{deep.testPlan?.timeCap ?? "—"}</span>
                                                             </div>
+
                                                         </CardContent>
                                                     </Card>
 
@@ -1408,12 +1418,13 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                         </CardHeader>
                                                         <CardContent className="space-y-3">
                                                             <Badge variant="outline" className="rounded-full w-fit">
-                                                                Artifact: {deep.firstMove.type}
+                                                                Artifact: {deep.firstMove?.type ?? "—"}
+
                                                             </Badge>
 
                                                             <div className="rounded-2xl border bg-muted/30 p-3">
                                 <pre className="whitespace-pre-wrap text-sm leading-relaxed">
-                                  {deep.firstMove.content}
+                                  {deep.firstMove?.content ?? "-"}
                                 </pre>
                                                             </div>
 
