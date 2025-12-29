@@ -11,18 +11,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import {
-    ChevronRight,
-    Sparkles,
-    ShieldCheck,
-    Lock,
-    Unlock,
-    Wand2,
-    Star,
-    StarOff,
-    History,
-} from "lucide-react";
-const asArray = <T,>(v: unknown): T[] => (Array.isArray(v) ? (v as T[]) : []);
+import { ChevronRight, Sparkles, ShieldCheck, Lock, Unlock, Wand2, Star, StarOff, History } from "lucide-react";
+import QuickStart15 from "@/components/QuickStart15";
+
 
 const lanes = [
     { id: "surprise", label: "Surprise me" },
@@ -77,19 +68,57 @@ function short(s: string, max = 88) {
     return s.length > max ? s.slice(0, max - 1) + "…" : s;
 }
 
-function keyForInstant(x: any) {
-    const lane = String(x?.meta?.lane ?? x?.lane ?? "Lane").trim();
-    const micro = String(
-        x?.microNiche ??
-        x?.micro_niche ??
-        x?.name ?? // <-- your current API objects use "name"
-        "Unknown"
-    ).trim();
+function safeString(v: unknown, fallback = ""): string {
+    if (typeof v === "string") return v;
+    if (v === null || v === undefined) return fallback;
+    return String(v);
+}
+
+function keyForInstant(x: unknown) {
+    const obj = (typeof x === "object" && x !== null ? (x as Record<string, unknown>) : {}) as Record<string, unknown>;
+    const meta = (typeof obj.meta === "object" && obj.meta !== null ? (obj.meta as Record<string, unknown>) : {}) as Record<
+        string,
+        unknown
+    >;
+
+    const lane = safeString(meta.lane ?? obj.lane, "Lane").trim();
+    const micro = safeString(obj.microNiche ?? obj.micro_niche ?? obj.name, "Unknown").trim();
     return `${lane}::${micro}`;
 }
 
-
+// Stripe/session key
 const LS_SESSION_KEY = "mne_session_id";
+
+// Persistence keys for “return from Stripe and keep context”
+const LS_HISTORY_KEY = "mne_history_v1";
+const LS_SAVED_KEY = "mne_saved_v1";
+const LS_LAST_INSTANT_KEY = "mne_last_instant_v1";
+const LS_UNLOCK_UNTIL_KEY = "mne_unlock_until_v1";
+
+// You can change this easily (e.g., 15 minutes)
+const UNLOCK_WINDOW_MINUTES = 10;
+
+function readJson<T>(key: string): T | null {
+    try {
+        const raw = localStorage.getItem(key);
+        if (!raw) return null;
+        return JSON.parse(raw) as T;
+    } catch {
+        return null;
+    }
+}
+
+function writeJson(key: string, value: unknown) {
+    try {
+        localStorage.setItem(key, JSON.stringify(value));
+    } catch {
+        // ignore storage errors
+    }
+}
+
+function clampArray<T>(arr: T[], max = 30): T[] {
+    return arr.slice(0, max);
+}
 
 export default function MicroNicheEngineFrontendPrototype() {
     const [mode, setMode] = useState<"instant" | "deep">("instant");
@@ -108,10 +137,14 @@ export default function MicroNicheEngineFrontendPrototype() {
     const [isUnlocking, setIsUnlocking] = useState(false);
     const [isDeepLoading, setIsDeepLoading] = useState(false);
 
-    // Session lists
+    // Lists (persisted)
     const [history, setHistory] = useState<InstantProof[]>([]);
     const [saved, setSaved] = useState<InstantProof[]>([]);
     const [avoidRepeats, setAvoidRepeats] = useState(true);
+
+    // Countdown (persisted)
+    const [unlockUntil, setUnlockUntil] = useState<number | null>(null);
+    const [nowTick, setNowTick] = useState<number>(() => Date.now());
 
     const userReady = useMemo(() => true, []);
 
@@ -127,6 +160,104 @@ export default function MicroNicheEngineFrontendPrototype() {
         return saved.some((s) => keyForInstant(s) === k);
     }, [instant, saved]);
 
+    const secondsLeft = useMemo(() => {
+        if (!unlockUntil) return 0;
+        const ms = unlockUntil - nowTick;
+        return ms > 0 ? Math.ceil(ms / 1000) : 0;
+    }, [unlockUntil, nowTick]);
+
+    const mmssLeft = useMemo(() => {
+        const s = secondsLeft;
+        const mm = Math.floor(s / 60);
+        const ss = s % 60;
+        return `${mm}:${String(ss).padStart(2, "0")}`;
+    }, [secondsLeft]);
+
+    // ---------- Persistence: rehydrate on first mount ----------
+    useEffect(() => {
+        // Restore history/saved/last instant
+        const h = readJson<InstantProof[]>(LS_HISTORY_KEY) ?? [];
+        const s = readJson<InstantProof[]>(LS_SAVED_KEY) ?? [];
+        const last = readJson<InstantProof>(LS_LAST_INSTANT_KEY);
+
+        if (Array.isArray(h)) setHistory(clampArray(h, 30));
+        if (Array.isArray(s)) setSaved(clampArray(s, 30));
+        if (last && typeof last === "object") {
+            setInstant(last);
+        }
+
+        // Restore unlock window timestamp
+        const until = readJson<number>(LS_UNLOCK_UNTIL_KEY);
+        if (typeof until === "number" && Number.isFinite(until)) {
+            setUnlockUntil(until);
+        }
+    }, []);
+
+    // Keep a ticking “now” for countdown
+    useEffect(() => {
+        const id = window.setInterval(() => setNowTick(Date.now()), 250);
+        return () => window.clearInterval(id);
+    }, []);
+
+    // If the window expired, show locked UI (but don’t delete the verified session id)
+    useEffect(() => {
+        if (!unlockUntil) return;
+        if (unlockUntil <= nowTick) {
+            // window expired
+            setPaidUnlocked(false);
+        }
+    }, [unlockUntil, nowTick]);
+
+    // Persist history/saved/instant whenever they change
+    useEffect(() => {
+        writeJson(LS_HISTORY_KEY, history);
+    }, [history]);
+
+    useEffect(() => {
+        writeJson(LS_SAVED_KEY, saved);
+    }, [saved]);
+
+    useEffect(() => {
+        if (instant) writeJson(LS_LAST_INSTANT_KEY, instant);
+    }, [instant]);
+
+    useEffect(() => {
+        if (unlockUntil) writeJson(LS_UNLOCK_UNTIL_KEY, unlockUntil);
+    }, [unlockUntil]);
+
+    // ---------- Stripe session capture + verify ----------
+    useEffect(() => {
+        const params = new URLSearchParams(window.location.search);
+        const sessionId = params.get("session_id");
+        if (sessionId) {
+            localStorage.setItem(LS_SESSION_KEY, sessionId);
+        }
+    }, []);
+
+    useEffect(() => {
+        const sessionId = localStorage.getItem(LS_SESSION_KEY);
+        if (!sessionId) return;
+
+        (async () => {
+            try {
+                const r = await fetch(`/api/stripe/verify-session?session_id=${encodeURIComponent(sessionId)}`);
+                const j = (await r.json().catch(() => ({}))) as { paid?: boolean };
+                const paid = !!j?.paid;
+
+                setPaidUnlocked(paid);
+
+                // If paid, open a time window for “deep proof”
+                if (paid) {
+                    const until = Date.now() + UNLOCK_WINDOW_MINUTES * 60_000;
+                    setUnlockUntil(until);
+                }
+            } catch {
+                setPaidUnlocked(false);
+            }
+        })();
+    }, []);
+
+    // ---------- Session helpers ----------
     const addToHistory = (res: InstantProof) => {
         const k = keyForInstant(res);
         setHistory((prev) => {
@@ -145,10 +276,10 @@ export default function MicroNicheEngineFrontendPrototype() {
         });
     };
 
-    const useResult = (res: InstantProof) => {
+    const applyResult = (res: InstantProof) => {
         setInstant(res);
         setDeep(null);
-        setPaidUnlocked(false);
+        // Do NOT nuke unlock state here — it’s valid for the session/window.
         setPerspective("user");
         window.scrollTo({ top: 0, behavior: "smooth" });
     };
@@ -156,38 +287,26 @@ export default function MicroNicheEngineFrontendPrototype() {
     const clearSession = () => {
         setHistory([]);
         setSaved([]);
+        setInstant(null);
+        setDeep(null);
+        // Keep Stripe session id; user paid. Clear unlock window though.
+        setPaidUnlocked(false);
+        setUnlockUntil(null);
+
+        try {
+            localStorage.removeItem(LS_HISTORY_KEY);
+            localStorage.removeItem(LS_SAVED_KEY);
+            localStorage.removeItem(LS_LAST_INSTANT_KEY);
+            localStorage.removeItem(LS_UNLOCK_UNTIL_KEY);
+        } catch {
+            // ignore
+        }
     };
 
-    // --- Stripe session capture + verify ---
-    useEffect(() => {
-        const params = new URLSearchParams(window.location.search);
-        const sessionId = params.get("session_id");
-        if (sessionId) {
-            localStorage.setItem(LS_SESSION_KEY, sessionId);
-        }
-    }, []);
-
-    useEffect(() => {
-        const sessionId = localStorage.getItem(LS_SESSION_KEY);
-        if (!sessionId) return;
-
-        // Verify paid (server-side with Stripe secret)
-        (async () => {
-            try {
-                const r = await fetch(`/api/stripe/verify-session?session_id=${encodeURIComponent(sessionId)}`);
-                const j = await r.json();
-                setPaidUnlocked(!!j?.paid);
-            } catch {
-                // If verification fails, keep locked. Deep route will still enforce 402.
-                setPaidUnlocked(false);
-            }
-        })();
-    }, []);
-
+    // ---------- Actions ----------
     const onGenerate = async () => {
         setIsGenerating(true);
         setDeep(null);
-        setPaidUnlocked(false);
 
         try {
             const avoidMicroNiches = avoidRepeats ? history.map((h) => h.microNiche) : [];
@@ -206,7 +325,7 @@ export default function MicroNicheEngineFrontendPrototype() {
             });
 
             if (!res.ok) {
-                const err = await res.json().catch(() => ({}));
+                const err = (await res.json().catch(() => ({}))) as { message?: string };
                 throw new Error(err?.message || `Request failed: ${res.status}`);
             }
 
@@ -219,14 +338,20 @@ export default function MicroNicheEngineFrontendPrototype() {
             if (sessionId) {
                 try {
                     const vr = await fetch(`/api/stripe/verify-session?session_id=${encodeURIComponent(sessionId)}`);
-                    const vj = await vr.json();
-                    setPaidUnlocked(!!vj?.paid);
+                    const vj = (await vr.json().catch(() => ({}))) as { paid?: boolean };
+                    const paid = !!vj?.paid;
+                    setPaidUnlocked(paid);
+                    if (paid) {
+                        const until = Date.now() + UNLOCK_WINDOW_MINUTES * 60_000;
+                        setUnlockUntil(until);
+                    }
                 } catch {
                     setPaidUnlocked(false);
                 }
             }
-        } catch (e: any) {
-            alert(`Instant generation failed: ${e?.message ?? "Unknown error"}`);
+        } catch (e: unknown) {
+            const msg = e instanceof Error ? e.message : "Unknown error";
+            alert(`Instant generation failed: ${msg}`);
         } finally {
             setIsGenerating(false);
         }
@@ -235,14 +360,20 @@ export default function MicroNicheEngineFrontendPrototype() {
     const onUnlockDeep = async () => {
         if (!instant) return;
 
+        // Persist the current context BEFORE redirect (this is the key fix)
+        writeJson(LS_LAST_INSTANT_KEY, instant);
+        writeJson(LS_HISTORY_KEY, history);
+        writeJson(LS_SAVED_KEY, saved);
+
         setIsUnlocking(true);
         try {
             const r = await fetch("/api/stripe/create-checkout-session", { method: "POST" });
-            const j = await r.json().catch(() => ({}));
+            const j = (await r.json().catch(() => ({}))) as { url?: string; error?: string };
             if (!r.ok || !j?.url) throw new Error(j?.error || "Checkout session creation failed.");
             window.location.href = j.url;
-        } catch (e: any) {
-            alert(`Checkout failed: ${e?.message ?? "Unknown error"}`);
+        } catch (e: unknown) {
+            const msg = e instanceof Error ? e.message : "Unknown error";
+            alert(`Checkout failed: ${msg}`);
         } finally {
             setIsUnlocking(false);
         }
@@ -254,6 +385,13 @@ export default function MicroNicheEngineFrontendPrototype() {
         const sessionId = localStorage.getItem(LS_SESSION_KEY);
         if (!sessionId) {
             alert("No Stripe session found. Click Unlock Deep Proof first.");
+            return;
+        }
+
+        // Optional: enforce countdown window client-side too
+        if (unlockUntil && unlockUntil <= Date.now()) {
+            setPaidUnlocked(false);
+            alert("Your Deep Proof window expired. Please unlock again.");
             return;
         }
 
@@ -269,7 +407,8 @@ export default function MicroNicheEngineFrontendPrototype() {
                 }),
             });
 
-            const j = await r.json().catch(() => ({}));
+            const j = (await r.json().catch(() => ({}))) as { error?: string };
+
             if (r.status === 402) {
                 setPaidUnlocked(false);
                 alert("Deep Proof is locked. Payment not verified for this session.");
@@ -277,10 +416,15 @@ export default function MicroNicheEngineFrontendPrototype() {
             }
             if (!r.ok) throw new Error(j?.error || `Deep Proof failed: ${r.status}`);
 
-            setDeep(j as DeepProof);
+            setDeep(j as unknown as DeepProof);
             setPaidUnlocked(true);
-        } catch (e: any) {
-            alert(`Deep Proof failed: ${e?.message ?? "Unknown error"}`);
+
+            // Refresh/extend the countdown window when deep is generated successfully
+            const until = Date.now() + UNLOCK_WINDOW_MINUTES * 60_000;
+            setUnlockUntil(until);
+        } catch (e: unknown) {
+            const msg = e instanceof Error ? e.message : "Unknown error";
+            alert(`Deep Proof failed: ${msg}`);
         } finally {
             setIsDeepLoading(false);
         }
@@ -334,9 +478,7 @@ export default function MicroNicheEngineFrontendPrototype() {
                                         <ShieldCheck className="h-4 w-4 mr-2" /> Deep Proof
                                     </Button>
                                 </div>
-                                <p className="text-xs text-muted-foreground">
-                                    Deep Proof generates Instant Proof first, then offers an optional unlock.
-                                </p>
+                                <p className="text-xs text-muted-foreground">Deep Proof generates Instant Proof first, then offers an optional unlock.</p>
                             </div>
 
                             <div className="space-y-2">
@@ -405,7 +547,7 @@ export default function MicroNicheEngineFrontendPrototype() {
                             <div className="flex items-center justify-between gap-3">
                                 <div className="space-y-1">
                                     <Label className="flex items-center gap-2">
-                                        Avoid repeats (session)
+                                        Avoid repeats
                                         <Badge variant="secondary" className="rounded-full">
                                             Default
                                         </Badge>
@@ -422,15 +564,9 @@ export default function MicroNicheEngineFrontendPrototype() {
 
                             <div className="flex items-center justify-between">
                                 <div className="text-xs text-muted-foreground">
-                                    Session: <span className="font-medium">{history.length}</span> generated /{" "}
-                                    <span className="font-medium">{saved.length}</span> saved
+                                    Stored: <span className="font-medium">{history.length}</span> history / <span className="font-medium">{saved.length}</span> saved
                                 </div>
-                                <Button
-                                    variant="outline"
-                                    className="rounded-2xl"
-                                    onClick={clearSession}
-                                    disabled={!history.length && !saved.length}
-                                >
+                                <Button variant="outline" className="rounded-2xl" onClick={clearSession} disabled={!history.length && !saved.length && !instant}>
                                     Clear
                                 </Button>
                             </div>
@@ -463,7 +599,7 @@ export default function MicroNicheEngineFrontendPrototype() {
                                 <Card className="rounded-2xl">
                                     <CardHeader className="pb-3">
                                         <CardTitle className="text-base flex items-center gap-2">
-                                            <History className="h-4 w-4" /> History (session)
+                                            <History className="h-4 w-4" /> History (persisted)
                                             <Badge variant="secondary" className="rounded-full">
                                                 {history.length}
                                             </Badge>
@@ -491,7 +627,7 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                                 <div className="text-sm font-medium truncate">{short(h.microNiche, 80)}</div>
                                                             </div>
                                                             <div className="flex items-center gap-2">
-                                                                <Button variant="outline" className="rounded-2xl" onClick={() => useResult(h)}>
+                                                                <Button variant="outline" className="rounded-2xl" onClick={() => applyResult(h)}>
                                                                     Use
                                                                 </Button>
                                                                 <Button
@@ -517,7 +653,7 @@ export default function MicroNicheEngineFrontendPrototype() {
                                 <Card className="rounded-2xl">
                                     <CardHeader className="pb-3">
                                         <CardTitle className="text-base flex items-center gap-2">
-                                            <Star className="h-4 w-4" /> Saved
+                                            <Star className="h-4 w-4" /> Saved (persisted)
                                             <Badge variant="secondary" className="rounded-full">
                                                 {saved.length}
                                             </Badge>
@@ -544,7 +680,7 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                                 <div className="text-sm font-medium truncate">{short(s.microNiche, 80)}</div>
                                                             </div>
                                                             <div className="flex items-center gap-2">
-                                                                <Button variant="outline" className="rounded-2xl" onClick={() => useResult(s)}>
+                                                                <Button variant="outline" className="rounded-2xl" onClick={() => applyResult(s)}>
                                                                     Use
                                                                 </Button>
                                                                 <Button variant="default" className="rounded-2xl" onClick={() => toggleSave(s)} title="Unsave">
@@ -675,10 +811,8 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                             <CardTitle className="text-base">First Service to Offer</CardTitle>
                                                         </CardHeader>
                                                         <CardContent className="space-y-2">
-                                                            <div className="text-sm font-medium">{instant?.firstService?.name ?? "—"}
-                                                            </div>
-                                                            <div className="text-sm text-muted-foreground">{instant?.firstService?.name ?? "—"}
-                                                            </div>
+                                                            <div className="text-sm font-medium">{instant?.firstService?.name ?? "—"}</div>
+                                                            <div className="text-sm text-muted-foreground">{instant?.firstService?.outcome ?? "—"}</div>
                                                         </CardContent>
                                                     </Card>
                                                 </div>
@@ -692,8 +826,6 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                             {(instant?.buyerPlaces ?? []).map((p, i) => (
                                                                 <li key={i}>{p}</li>
                                                             ))}
-
-
                                                         </ul>
                                                     </CardContent>
                                                 </Card>
@@ -710,9 +842,7 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                     <CardHeader className="flex flex-row items-center justify-between gap-3">
                                                         <div>
                                                             <CardTitle className="text-base">Want the proof?</CardTitle>
-                                                            <p className="text-sm text-muted-foreground">
-                                                                Deep Proof explains why it works and how to expand safely.
-                                                            </p>
+                                                            <p className="text-sm text-muted-foreground">Deep Proof explains why it works and how to expand safely.</p>
                                                         </div>
                                                         <div className="flex items-center gap-2">
                                                             {paidUnlocked ? (
@@ -722,6 +852,11 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                             ) : (
                                                                 <Badge variant="outline" className="rounded-full flex items-center gap-1">
                                                                     <Lock className="h-3 w-3" /> Locked
+                                                                </Badge>
+                                                            )}
+                                                            {paidUnlocked && unlockUntil && secondsLeft > 0 && (
+                                                                <Badge variant="outline" className="rounded-full">
+                                                                    Time left: {mmssLeft}
                                                                 </Badge>
                                                             )}
                                                         </div>
@@ -902,7 +1037,6 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                                     {g}
                                                                 </Badge>
                                                             ))}
-
                                                         </div>
                                                     </CardContent>
                                                 </Card>
@@ -914,6 +1048,7 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                     <CardContent className="space-y-2 text-sm text-muted-foreground">
                                                         <div>Stripe session stored: {localStorage.getItem(LS_SESSION_KEY) ? "Yes" : "No"}</div>
                                                         <div>Unlocked (verified): {paidUnlocked ? "Yes" : "No"}</div>
+                                                        <div>Countdown: {paidUnlocked && unlockUntil && secondsLeft > 0 ? mmssLeft : "—"}</div>
                                                         <div>Deep Proof route still enforces a server-side 402 if unpaid.</div>
                                                     </CardContent>
                                                 </Card>
@@ -964,7 +1099,7 @@ export default function MicroNicheEngineFrontendPrototype() {
                 </div>
 
                 <footer className="mt-10 text-xs text-muted-foreground">
-                    Tip: History/Saved are session-only right now. Next step can be persisting them to localStorage.
+                    Tip: History/Saved now persist to localStorage so Stripe redirects don’t wipe the page state.
                 </footer>
             </div>
         </div>
