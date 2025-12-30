@@ -1,24 +1,34 @@
 // app/unlock/page.tsx
-import React from "react";
-import UnlockClient from "./unlock-client";
+"use client";
 
-export const dynamic = "force-dynamic";
-export const revalidate = 0;
+import React, { useEffect } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 
-type SearchParams = Record<string, string | string[] | undefined>;
+export default function UnlockPage() {
+    const router = useRouter();
+    const sp = useSearchParams();
 
-function firstParam(v: string | string[] | undefined): string {
-  if (!v) return "";
-  return Array.isArray(v) ? (v[0] ?? "") : v;
-}
+    const sessionId = (sp.get("session_id") ?? "").trim();
+    const paid = (sp.get("paid") ?? "").trim() === "1";
 
-export default function UnlockPage({
-                                     searchParams,
-                                   }: {
-  searchParams?: SearchParams;
-}) {
-  const sessionId = firstParam(searchParams?.session_id).trim();
-  const paid = firstParam(searchParams?.paid).trim() === "1";
+    useEffect(() => {
+        if (!sessionId) {
+            router.replace("/?unlock=missing_session");
+            return;
+        }
+        // always normalize away from /prototype and back to /
+        const url = `/?paid=${paid ? "1" : "0"}&session_id=${encodeURIComponent(
+            sessionId
+        )}`;
+        router.replace(url);
+    }, [router, sessionId, paid]);
 
-  return <UnlockClient sessionId={sessionId} paid={paid} />;
+    return (
+        <main style={{ maxWidth: 720, margin: "0 auto", padding: 24 }}>
+            <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 10 }}>
+                Unlocking…
+            </h1>
+            <p>Redirecting you back to the app…</p>
+        </main>
+    );
 }
