@@ -41,7 +41,7 @@ async function stripePostForm(
             "Content-Type": "application/x-www-form-urlencoded",
         },
         body: form.toString(),
-        // ✅ Cloudflare Workers-native timeout (reliable here)
+        // ✅ Cloudflare Workers-native timeout
         signal: AbortSignal.timeout(timeoutMs),
     });
 
@@ -68,7 +68,7 @@ export async function POST(req: Request) {
     const startedAt = Date.now();
 
     try {
-        // Read body (even if unused) so stream is consumed safely
+        // Consume body safely
         await req.json().catch(() => null);
 
         const secretKey = (process.env.STRIPE_SECRET_KEY ?? "").trim();
@@ -82,15 +82,14 @@ export async function POST(req: Request) {
         const priceId = (process.env.STRIPE_PRICE_DEEP_PROOF ?? "").trim();
         const baseUrl = getBaseUrl(req);
 
-        const success = new URL("/unlock", baseUrl);
-        success.searchParams.set("paid", "1");
-        success.searchParams.set("session_id", "{CHECKOUT_SESSION_ID}");
+        // IMPORTANT:
+        // Stripe only replaces {CHECKOUT_SESSION_ID} when it appears literally.
+        // Do NOT URL-encode the braces.
+        const successUrl = `${baseUrl}/unlock?paid=1&session_id={CHECKOUT_SESSION_ID}`;
 
         const cancel = new URL("/", baseUrl);
         cancel.searchParams.set("canceled", "1");
         cancel.searchParams.set("mode", "deep");
-
-        const successUrl = success.toString();
         const cancelUrl = cancel.toString();
 
         console.log("create_checkout_enter", {
@@ -120,7 +119,6 @@ export async function POST(req: Request) {
 
         console.log("create_checkout_before_stripe", { t: Date.now() - startedAt });
 
-        // ✅ This will actually timeout in Workers
         const session = await stripePostForm(
             "checkout/sessions",
             secretKey,
