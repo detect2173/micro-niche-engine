@@ -1,15 +1,24 @@
 // app/unlock/page.tsx
-import React, { Suspense } from "react";
-import UnlockClient from "./unlock-client";
+import { redirect } from "next/navigation";
 
-export const dynamic = "force-dynamic";
-export const revalidate = 0;
+type SearchParams = {
+    paid?: string;
+    session_id?: string;
+};
 
-export default function UnlockPage() {
-  // Must wrap any useSearchParams usage in Suspense (Next.js requirement)
-  return (
-      <Suspense fallback={<div style={{ padding: 24 }}>Redirecting…</div>}>
-        <UnlockClient />
-      </Suspense>
-  );
+export default function UnlockPage({
+                                       searchParams,
+                                   }: {
+    searchParams?: SearchParams;
+}) {
+    const sessionId = searchParams?.session_id ?? "";
+    const paid = searchParams?.paid === "1";
+
+    if (!sessionId) {
+        redirect("/?unlock=missing_session");
+    }
+
+    redirect(
+        `/?paid=${paid ? "1" : "0"}&session_id=${encodeURIComponent(sessionId)}`
+    );
 }
