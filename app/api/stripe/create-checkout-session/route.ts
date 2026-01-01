@@ -1,151 +1,95 @@
 // app/api/stripe/create-checkout-session/route.ts
+import { NextRequest, NextResponse } from "next/server";
+import { getStripe } from "@/lib/mne/stripe";
+
 export const runtime = "nodejs";
 
-/** origin-only (scheme + host) */
-function toOrigin(raw: string): string {
-    const s = (raw ?? "").trim();
-    if (!s) return "";
-    const withScheme = s.startsWith("http") ? s : `https://${s}`;
-    try {
-        return new URL(withScheme).origin;
-    } catch {
-        return "";
-    }
+/**
+ * Build base URL from request headers (proxy-safe).
+ * This avoids localhost poisoning and automatically uses:
+ * - https://micronicheengine.com
+ * - https://*.workers.dev
+ * - http://localhost:3000 (local dev)
+ */
+function getBaseUrl(req: NextRequest): string {
+    const xfProto = req.headers.get("x-forwarded-proto");
+    const proto = (xfProto ? xfProto.split(",")[0] : "https").trim();
+
+    const xfHost = req.headers.get("x-forwarded-host");
+    const host = (xfHost ? xfHost.split(",")[0] : req.headers.get("host"))?.trim();
+
+    // Safe fallback (should almost never happen in real traffic)
+    if (!host) return "https://micronicheengine.com";
+
+    return `${proto}://${host}`.replace(/\/$/, "");
 }
 
-function getBaseUrl(req: Request): string {
-    const envUrl =
-        process.env.NEXT_PUBLIC_APP_URL ||
-        process.env.APP_URL ||
-        process.env.VERCEL_URL ||
-        "";
-
-    const originFromEnv = toOrigin(envUrl);
-    if (originFromEnv) return originFromEnv;
-
-    const host = req.headers.get("host") ?? "localhost:3000";
-    const proto = req.headers.get("x-forwarded-proto") ?? "http";
-    return `${proto}://${host}`;
+function mustEnv(name: string): string {
+    const v = process.env[name];
+    if (!v) throw new Error(`Missing env: ${name}`);
+    return v;
 }
 
-async function stripePostForm(
-    endpoint: string,
-    secretKey: string,
-    form: URLSearchParams,
-    timeoutMs: number
-) {
-    const res = await fetch(`https://api.stripe.com/v1/${endpoint}`, {
-        method: "POST",
-        headers: {
-            Authorization: `Bearer ${secretKey}`,
-            "Content-Type": "application/x-www-form-urlencoded",
-        },
-        body: form.toString(),
-        // ✅ Cloudflare Workers-native timeout
-        signal: AbortSignal.timeout(timeoutMs),
-    });
-
-    const text = await res.text();
-
-    let json: any = null;
+export async function POST(req: NextRequest) {
     try {
-        json = JSON.parse(text);
-    } catch {
-        // keep raw text fallback
-    }
+        // ✅ Lazy runtime-only initialization (CI-safe)
+        const stripe = getStripe();
 
-    if (!res.ok) {
-        const msg =
-            json?.error?.message ||
-            `Stripe error (${res.status}): ${text.slice(0, 400)}`;
-        throw new Error(msg);
-    }
+        // Body is optional; priceId override is allowed
+        const body = await req.json().catch(() => ({} as any));
+        const priceId = (body?.priceId as string) || mustEnv("STRIPE_PRICE_DEEP_PROOF");
 
-    return json;
-}
-
-export async function POST(req: Request) {
-    const startedAt = Date.now();
-
-    try {
-        // Consume body safely
-        await req.json().catch(() => null);
-
-        const secretKey = (process.env.STRIPE_SECRET_KEY ?? "").trim();
-        if (!secretKey) {
-            return new Response(JSON.stringify({ error: "Missing STRIPE_SECRET_KEY" }), {
-                status: 500,
-                headers: { "Content-Type": "application/json" },
-            });
-        }
-
-        const priceId = (process.env.STRIPE_PRICE_DEEP_PROOF ?? "").trim();
         const baseUrl = getBaseUrl(req);
+        const successUrl = `${baseUrl}/prototype?paid=1&session_id={CHECKOUT_SESSION_ID}`;
+        const cancelUrl = `${baseUrl}/prototype?canceled=1`;
 
-        // IMPORTANT:
-        // Stripe only replaces {CHECKOUT_SESSION_ID} when it appears literally.
-        // Do NOT URL-encode the braces.
-        const successUrl = `${baseUrl}/unlock?paid=1&session_id={CHECKOUT_SESSION_ID}`;
-
-        const cancel = new URL("/", baseUrl);
-        cancel.searchParams.set("canceled", "1");
-        cancel.searchParams.set("mode", "deep");
-        const cancelUrl = cancel.toString();
-
-        console.log("create_checkout_enter", {
+        // TEMP DEBUG (remove once verified)
+        console.log("stripe_redirect_debug", {
+            host: req.headers.get("host"),
+            xfHost: req.headers.get("x-forwarded-host"),
+            xfProto: req.headers.get("x-forwarded-proto"),
             baseUrl,
-            hasPriceId: !!priceId,
-            t: Date.now() - startedAt,
+            successUrl,
+            cancelUrl,
+            priceId,
         });
 
-        const form = new URLSearchParams();
-        form.set("mode", "payment");
-        form.set("success_url", successUrl);
-        form.set("cancel_url", cancelUrl);
-        form.set("allow_promotion_codes", "true");
-
-        if (priceId) {
-            form.set("line_items[0][price]", priceId);
-            form.set("line_items[0][quantity]", "1");
-        } else {
-            form.set("line_items[0][quantity]", "1");
-            form.set("line_items[0][price_data][currency]", "usd");
-            form.set("line_items[0][price_data][unit_amount]", "2700");
-            form.set(
-                "line_items[0][price_data][product_data][name]",
-                "Micro-Niche Engine — Full Validation"
+        // Optional sanity check: ensure price exists (helps catch test/live mixups)
+        // If you don’t want this extra API call, remove this block.
+        try {
+            await stripe.prices.retrieve(priceId);
+        } catch (e: any) {
+            return NextResponse.json(
+                {
+                    error:
+                        "Stripe price lookup failed. Check STRIPE_PRICE_DEEP_PROOF and make sure you're using the correct mode (test vs live).",
+                    details: e?.message ?? String(e),
+                },
+                { status: 500 }
             );
         }
 
-        console.log("create_checkout_before_stripe", { t: Date.now() - startedAt });
-
-        const session = await stripePostForm(
-            "checkout/sessions",
-            secretKey,
-            form,
-            12000
-        );
-
-        console.log("create_checkout_after_stripe", {
-            ok: true,
-            t: Date.now() - startedAt,
+        // Create Checkout Session (SDK)
+        const session = await stripe.checkout.sessions.create({
+            mode: "payment",
+            success_url: successUrl,
+            cancel_url: cancelUrl,
+            line_items: [{ price: priceId, quantity: 1 }],
+            // allow_promotion_codes: true,
         });
 
         if (!session?.url) {
-            throw new Error("Stripe session created but session.url was missing.");
+            return NextResponse.json(
+                { error: "Stripe session created but no URL was returned." },
+                { status: 500 }
+            );
         }
 
-        return new Response(JSON.stringify({ url: session.url }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-        });
-    } catch (e: unknown) {
-        const msg = e instanceof Error ? e.message : String(e);
-        console.error("create_checkout_error", { msg, t: Date.now() - startedAt });
-
-        return new Response(JSON.stringify({ error: msg }), {
-            status: 500,
-            headers: { "Content-Type": "application/json" },
-        });
+        return NextResponse.json({ url: session.url, id: session.id });
+    } catch (err: any) {
+        return NextResponse.json(
+            { error: err?.message || "Unknown error" },
+            { status: 500 }
+        );
     }
 }

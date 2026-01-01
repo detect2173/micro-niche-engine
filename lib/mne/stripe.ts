@@ -1,54 +1,37 @@
 // lib/mne/stripe.ts
 import Stripe from "stripe";
 
-const secretKey = process.env.STRIPE_SECRET_KEY;
-if (!secretKey) throw new Error("Missing STRIPE_SECRET_KEY");
+/**
+ * IMPORTANT:
+ * - Do NOT read STRIPE_SECRET_KEY at module load time.
+ * - Next.js / OpenNext / CI may evaluate modules during build ("collect page data").
+ * - Therefore: expose a getter that reads env vars lazily at runtime.
+ *
+ * This avoids CI failures like: "Missing STRIPE_SECRET_KEY" during next build.
+ */
 
-export const stripe: Stripe = new Stripe(secretKey, {
-    apiVersion: "2025-12-15.clover",
-});
-
-export class HttpError extends Error {
-    public readonly statusCode: number;
-
-    constructor(message: string, statusCode: number) {
-        super(message);
-        this.name = "HttpError";
-        this.statusCode = statusCode;
-    }
+declare global {
+    // eslint-disable-next-line no-var
+    var __mneStripe: Stripe | undefined;
 }
 
-export async function createDeepProofCheckoutSession() {
-    const price = process.env.STRIPE_PRICE_DEEP_PROOF;
-    if (!price) throw new Error("Missing STRIPE_PRICE_DEEP_PROOF");
+export function getStripe(): Stripe {
+    // Reuse a singleton across hot reloads / requests where possible
+    if (globalThis.__mneStripe) return globalThis.__mneStripe;
 
-    const appUrl: string = (process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000").replace(/\/+$/, "");
+    const key = process.env.STRIPE_SECRET_KEY;
+    if (!key) {
+        throw new Error("Missing STRIPE_SECRET_KEY");
+    }
 
-    const successUrl = `${appUrl}/?paid=1&session_id={CHECKOUT_SESSION_ID}`;
-    const cancelUrl = `${appUrl}/?canceled=1`;
-
-
-    const session = await stripe.checkout.sessions.create({
-        mode: "payment",
-        line_items: [{ price, quantity: 1 }],
-        success_url: successUrl,
-        cancel_url: cancelUrl,
-        metadata: { product: "deep_proof" },
+    // NOTE: apiVersion typing differs by stripe package versions.
+    // Keeping it simple and compatible:
+    const stripe = new Stripe(key, {
+        // If your installed Stripe version requires apiVersion, set it here:
+        // apiVersion: "2024-06-20",
+        // Otherwise you can omit apiVersion entirely.
     });
 
-    return session;
-}
-
-export async function assertPaidSession(sessionId: string) {
-    const session = await stripe.checkout.sessions.retrieve(sessionId);
-
-    if (session.payment_status !== "paid") {
-        throw new HttpError("Payment not completed", 402);
-    }
-
-    if (session.metadata?.product !== "deep_proof") {
-        throw new HttpError("Invalid purchase", 403);
-    }
-
-    return session;
+    globalThis.__mneStripe = stripe;
+    return stripe;
 }
