@@ -24,7 +24,6 @@ export default async function UnlockPage(props: {
         redirect("/?unlock=missing_session");
     }
 
-    redirect(
-        `/?paid=${paid ? "1" : "0"}&session_id=${encodeURIComponent(sessionId)}`
-    );
+    // Always funnel back to the canonical app route:
+    redirect(`/?paid=${paid ? "1" : "0"}&session_id=${encodeURIComponent(sessionId)}`);
 }

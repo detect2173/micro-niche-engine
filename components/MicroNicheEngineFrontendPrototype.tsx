@@ -133,6 +133,11 @@ const LS_SAVED_KEY = "mne_saved_v1";
 // If false, "Clear" only clears the currently displayed result.
 const CLEAR_WIPES_LISTS = false;
 
+// UX timers
+const VERIFY_WINDOW_SECONDS = 10;       // show countdown after Stripe return
+const VERIFY_POLL_MS = 2000;            // retry verify every 2s
+const DEEP_TIMEOUT_SECONDS = 45;        // deep validation hard timeout
+
 /** -----------------------------
  *  Helpers
  *  ----------------------------- */
@@ -291,6 +296,15 @@ export default function MicroNicheEngineFrontendPrototype() {
     const [passExpiresAt, setPassExpiresAt] = useState<number | undefined>(undefined);
     const [secondsRemaining, setSecondsRemaining] = useState<number | undefined>(undefined);
 
+    // NEW: verification UX
+    const [isVerifying, setIsVerifying] = useState(false);
+    const [verifySecondsLeft, setVerifySecondsLeft] = useState<number>(0);
+    const [verifyError, setVerifyError] = useState<string | null>(null);
+
+    // NEW: deep validation UX
+    const [deepSecondsLeft, setDeepSecondsLeft] = useState<number>(0);
+    const [deepError, setDeepError] = useState<string | null>(null);
+
     const deepSectionRef = useRef<HTMLDivElement | null>(null);
 
     const userReady = useMemo(() => true, []);
@@ -356,6 +370,7 @@ export default function MicroNicheEngineFrontendPrototype() {
         setInstant(res);
         setDeep(null);
         setMode("instant");
+        setDeepError(null);
         window.scrollTo({ top: 0, behavior: "smooth" });
     };
 
@@ -363,6 +378,7 @@ export default function MicroNicheEngineFrontendPrototype() {
         setInstant(null);
         setDeep(null);
         setMode("instant");
+        setDeepError(null);
         window.scrollTo({ top: 0, behavior: "smooth" });
     };
 
@@ -374,39 +390,105 @@ export default function MicroNicheEngineFrontendPrototype() {
     };
 
     /** -----------------------------
-     *  Stripe session capture + verify
+     *  Stripe session capture + verify (with countdown + retries)
      *  ----------------------------- */
 
+    async function verifySessionOnce(sessionId: string): Promise<VerifyResponse | null> {
+        const r = await fetch(`/api/stripe/verify-session?session_id=${encodeURIComponent(sessionId)}`, {
+            cache: "no-store",
+        });
+        const j = (await safeReadJson(r)) as VerifyResponse | null;
+
+        if (!r.ok) {
+            const msg = getApiErrorMessage(j) ?? `Verify failed: ${r.status}`;
+            throw new Error(msg);
+        }
+
+        return j;
+    }
+
+    async function verifyWithCountdown(sessionId: string, windowSeconds: number) {
+        setIsVerifying(true);
+        setVerifyError(null);
+        setVerifySecondsLeft(windowSeconds);
+
+        const deadline = Date.now() + windowSeconds * 1000;
+
+        // local countdown ticker
+        const tick = setInterval(() => {
+            const left = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+            setVerifySecondsLeft(left);
+        }, 250);
+
+        try {
+            // Try immediately, then retry every VERIFY_POLL_MS until window expires
+            while (Date.now() < deadline) {
+                try {
+                    const j = await verifySessionOnce(sessionId);
+
+                    const isPaid = !!j?.paid;
+                    setPaidUnlocked(isPaid);
+
+                    if (typeof j?.passExpiresAt === "number") setPassExpiresAt(j.passExpiresAt);
+                    if (typeof j?.secondsRemaining === "number") setSecondsRemaining(j.secondsRemaining);
+
+                    // If paid, we’re done. If not paid yet, keep polling until deadline.
+                    if (isPaid) {
+                        setVerifyError(null);
+                        return;
+                    }
+                } catch (e: any) {
+                    // don’t spam the user; just keep trying until deadline
+                    setVerifyError(e?.message ? String(e.message) : "Unable to verify yet.");
+                }
+
+                await new Promise((r) => setTimeout(r, VERIFY_POLL_MS));
+            }
+
+            // Window expired
+            setVerifyError((prev) => prev ?? "Couldn’t verify payment yet. Click Retry.");
+        } finally {
+            clearInterval(tick);
+            setIsVerifying(false);
+            setVerifySecondsLeft(0);
+        }
+    }
+
+    // Capture session_id and (optional) paid flag from URL, then auto-verify with countdown
     useEffect(() => {
         const params = new URLSearchParams(window.location.search);
-        const sessionId = params.get("session_id");
+        const sessionId = (params.get("session_id") ?? "").trim();
+        const paid = (params.get("paid") ?? "").trim() === "1";
+
         if (sessionId) {
             localStorage.setItem(LS_SESSION_KEY, sessionId);
 
-            // clean URL so refresh doesn't keep session_id around
+            // remove Stripe params from URL so refresh doesn’t re-trigger endlessly
             params.delete("session_id");
+            params.delete("paid");
             const newUrl = `${window.location.pathname}${params.toString() ? `?${params.toString()}` : ""}`;
             window.history.replaceState({}, "", newUrl);
+
+            // If Stripe says "paid=1", show verification countdown UX immediately
+            if (paid) {
+                void verifyWithCountdown(sessionId, VERIFY_WINDOW_SECONDS);
+            }
         }
     }, []);
 
+    // On mount, if we have a session_id, verify once (quietly)
     useEffect(() => {
         const sessionId = localStorage.getItem(LS_SESSION_KEY);
         if (!sessionId) return;
 
         (async () => {
             try {
-                const r = await fetch(`/api/stripe/verify-session?session_id=${encodeURIComponent(sessionId)}`);
-                const j = (await safeReadJson(r)) as VerifyResponse;
-
+                const j = await verifySessionOnce(sessionId);
                 setPaidUnlocked(!!j?.paid);
-
                 if (typeof j?.passExpiresAt === "number") setPassExpiresAt(j.passExpiresAt);
                 if (typeof j?.secondsRemaining === "number") setSecondsRemaining(j.secondsRemaining);
             } catch {
-                setPaidUnlocked(false);
-                setPassExpiresAt(undefined);
-                setSecondsRemaining(undefined);
+                // keep state as-is
             }
         })();
     }, []);
@@ -430,6 +512,7 @@ export default function MicroNicheEngineFrontendPrototype() {
 
     const onGenerate = async () => {
         setDeep(null);
+        setDeepError(null);
         setIsGenerating(true);
 
         try {
@@ -462,16 +545,16 @@ export default function MicroNicheEngineFrontendPrototype() {
                 setTimeout(() => deepSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 150);
             }
 
+            // Optional: refresh verify quietly if session exists
             const sessionId = localStorage.getItem(LS_SESSION_KEY);
             if (sessionId) {
                 try {
-                    const vr = await fetch(`/api/stripe/verify-session?session_id=${encodeURIComponent(sessionId)}`);
-                    const vj = (await safeReadJson(vr)) as VerifyResponse;
+                    const vj = await verifySessionOnce(sessionId);
                     setPaidUnlocked(!!vj?.paid);
                     if (typeof vj?.passExpiresAt === "number") setPassExpiresAt(vj.passExpiresAt);
                     if (typeof vj?.secondsRemaining === "number") setSecondsRemaining(vj.secondsRemaining);
                 } catch {
-                    // leave the current state
+                    // ignore
                 }
             }
         } catch (e: unknown) {
@@ -508,8 +591,19 @@ export default function MicroNicheEngineFrontendPrototype() {
         }
     };
 
+    const onRetryVerify = async () => {
+        const sessionId = localStorage.getItem(LS_SESSION_KEY);
+        if (!sessionId) {
+            setVerifyError("No Stripe session found. Please unlock again.");
+            return;
+        }
+        await verifyWithCountdown(sessionId, VERIFY_WINDOW_SECONDS);
+    };
+
     const onGenerateDeep = async () => {
         if (!instant) return;
+
+        setDeepError(null);
 
         const sessionId = localStorage.getItem(LS_SESSION_KEY);
         if (!sessionId) {
@@ -518,23 +612,39 @@ export default function MicroNicheEngineFrontendPrototype() {
         }
 
         setIsDeepLoading(true);
+
+        // countdown state
+        setDeepSecondsLeft(DEEP_TIMEOUT_SECONDS);
+        const deepDeadline = Date.now() + DEEP_TIMEOUT_SECONDS * 1000;
+
+        const tick = setInterval(() => {
+            const left = Math.max(0, Math.ceil((deepDeadline - Date.now()) / 1000));
+            setDeepSecondsLeft(left);
+        }, 250);
+
+        const controller = new AbortController();
+        const abortTimer = setTimeout(() => controller.abort(), DEEP_TIMEOUT_SECONDS * 1000);
+
         try {
             const r = await fetch("/api/generate/deep", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ sessionId, instant, notes }),
+                signal: controller.signal,
             });
 
             const j = await safeReadJson(r);
 
             if (r.status === 402) {
                 setPaidUnlocked(false);
-                alert("Full Validation is locked or expired. Please unlock again.");
+                setDeep(null);
+                setDeepError("Full Validation is locked or expired. Please unlock again.");
                 return;
             }
 
             if (!r.ok) {
-                alert(`Full Validation failed: ${getApiErrorMessage(j) ?? `Request failed: ${r.status}`}`);
+                const msg = getApiErrorMessage(j) ?? `Request failed: ${r.status}`;
+                setDeepError(`Full Validation failed: ${msg}`);
                 return;
             }
 
@@ -546,9 +656,16 @@ export default function MicroNicheEngineFrontendPrototype() {
             if (typeof dp?.meta?.secondsRemaining === "number") setSecondsRemaining(dp.meta.secondsRemaining);
 
             setTimeout(() => deepSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 150);
-        } catch (e: unknown) {
-            alert(`Full Validation failed: ${getApiErrorMessage(e) ?? (e instanceof Error ? e.message : "Unknown error")}`);
+        } catch (e: any) {
+            if (e?.name === "AbortError") {
+                setDeepError(`Full Validation timed out after ${DEEP_TIMEOUT_SECONDS}s. Please try again.`);
+            } else {
+                setDeepError(`Full Validation failed: ${e?.message ? String(e.message) : "Unknown error"}`);
+            }
         } finally {
+            clearInterval(tick);
+            clearTimeout(abortTimer);
+            setDeepSecondsLeft(0);
             setIsDeepLoading(false);
         }
     };
@@ -570,8 +687,7 @@ export default function MicroNicheEngineFrontendPrototype() {
 
   <div class="section">
     <div class="label">Verdict</div>
-    <div><b>${escapeHtml(deep.verdict ?? "—")
-            }</b></div>
+    <div><b>${escapeHtml(deep.verdict ?? "—")}</b></div>
     <div class="muted">${escapeHtml(deep.why?.summary || "—")}</div>
   </div>
 
@@ -718,24 +834,19 @@ export default function MicroNicheEngineFrontendPrototype() {
             return;
         }
 
-        // Avoid document.write (deprecated). Use DOM APIs instead.
         w.document.title = title;
 
         const doc = w.document;
-
-        // Ensure we have a head/body to work with
         const head = doc.head ?? doc.getElementsByTagName("head")[0] ?? doc.createElement("head");
         const body = doc.body ?? doc.getElementsByTagName("body")[0] ?? doc.createElement("body");
 
         if (!doc.head) doc.documentElement.appendChild(head);
         if (!doc.body) doc.documentElement.appendChild(body);
 
-        // Parse HTML and replace the document contents cleanly
         const parser = new DOMParser();
         const parsed = parser.parseFromString(html, "text/html");
 
         doc.documentElement.lang = parsed.documentElement.lang || "en";
-
         head.innerHTML = parsed.head?.innerHTML ?? "";
         body.innerHTML = parsed.body?.innerHTML ?? "";
 
@@ -1202,9 +1313,7 @@ export default function MicroNicheEngineFrontendPrototype() {
                                             <CardContent className="text-sm">{instant.oneActionToday}</CardContent>
                                         </Card>
 
-                                        {instant && (
-                                            <QuickStart15 steps={buildQuickStart15Steps(instant)} />
-                                        )}
+                                        {instant && <QuickStart15 steps={buildQuickStart15Steps(instant)} />}
 
                                         {/* Full Validation */}
                                         <div ref={deepSectionRef}>
@@ -1244,6 +1353,24 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                             <div>All purchases are final once the report is delivered.</div>
                                                             <div>If a technical issue prevents delivery, we’ll refund immediately.</div>
                                                         </div>
+
+                                                        {/* NEW: verification banner */}
+                                                        {isVerifying ? (
+                                                            <div className="rounded-2xl border bg-muted/30 p-3 text-xs text-muted-foreground">
+                                                                <div className="font-medium text-foreground">Verifying payment…</div>
+                                                                <div>Retrying automatically ({verifySecondsLeft}s)…</div>
+                                                            </div>
+                                                        ) : verifyError ? (
+                                                            <div className="rounded-2xl border bg-muted/30 p-3 text-xs text-muted-foreground">
+                                                                <div className="font-medium text-foreground">Verification not confirmed yet</div>
+                                                                <div className="mt-1">{verifyError}</div>
+                                                                <div className="mt-2">
+                                                                    <Button variant="outline" className="rounded-2xl" onClick={onRetryVerify}>
+                                                                        Retry verification
+                                                                    </Button>
+                                                                </div>
+                                                            </div>
+                                                        ) : null}
                                                     </div>
 
                                                     <div className="flex flex-col items-end gap-1">
@@ -1267,7 +1394,7 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                                     {isDeepLoading ? (
                                                                         <span className="flex items-center gap-2">
                                       <Loader2 className="h-4 w-4 animate-spin" />
-                                      Running validation…
+                                      Running validation… {deepSecondsLeft > 0 ? `(${deepSecondsLeft}s)` : ""}
                                     </span>
                                                                     ) : (
                                                                         "Run Full Validation"
@@ -1278,6 +1405,24 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                         )}
                                                     </div>
                                                 </CardContent>
+
+                                                {/* NEW: deep error banner */}
+                                                {deepError ? (
+                                                    <div className="px-6 pb-6">
+                                                        <div className="rounded-2xl border bg-muted/30 p-4 text-sm">
+                                                            <div className="font-medium">Validation didn’t complete</div>
+                                                            <div className="text-muted-foreground mt-1">{deepError}</div>
+                                                            <div className="mt-3 flex gap-2">
+                                                                <Button className="rounded-2xl" onClick={onGenerateDeep} disabled={!instant || isDeepLoading || !paidUnlocked}>
+                                                                    Retry
+                                                                </Button>
+                                                                <Button variant="outline" className="rounded-2xl" onClick={() => setDeepError(null)}>
+                                                                    Dismiss
+                                                                </Button>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                ) : null}
                                             </Card>
                                         </div>
 
@@ -1305,7 +1450,6 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                         </Badge>
                                                     </div>
 
-                                                    {/* 1) Verdict */}
                                                     <Card className="rounded-2xl border-2">
                                                         <CardHeader>
                                                             <CardTitle className="text-base">Verdict</CardTitle>
@@ -1316,12 +1460,11 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                                 <span className="font-semibold">{deep.verdict}</span>
                                                             </div>
                                                             <div className="text-sm text-muted-foreground leading-relaxed">
-                                                                {deep.verdict ?? "—"}
+                                                                {deep.why?.summary ?? "—"}
                                                             </div>
                                                         </CardContent>
                                                     </Card>
 
-                                                    {/* 2) Why */}
                                                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                                         <Card className="rounded-2xl">
                                                             <CardHeader>
@@ -1345,21 +1488,18 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                                     <div className="text-sm font-medium">Why it’s underserved</div>
                                                                     <div className="text-sm text-muted-foreground leading-relaxed">
                                                                         {deep.why?.underserved ?? "—"}
-
                                                                     </div>
                                                                 </div>
                                                                 <div>
                                                                     <div className="text-sm font-medium">Why it’s stable (2–5 years)</div>
                                                                     <div className="text-sm text-muted-foreground leading-relaxed">
                                                                         {deep.why?.stability ?? "—"}
-
                                                                     </div>
                                                                 </div>
                                                             </CardContent>
                                                         </Card>
                                                     </div>
 
-                                                    {/* 3) Money */}
                                                     <Card className="rounded-2xl">
                                                         <CardHeader>
                                                             <CardTitle className="text-base">What this realistically pays</CardTitle>
@@ -1377,11 +1517,9 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                                 <span className="font-medium">30–60 day realism:</span>{" "}
                                                                 <span className="text-muted-foreground">{deep.money?.realism30to60Days ?? "—"}</span>
                                                             </div>
-
                                                         </CardContent>
                                                     </Card>
 
-                                                    {/* 4) Test Plan */}
                                                     <Card className="rounded-2xl">
                                                         <CardHeader>
                                                             <CardTitle className="text-base">How to test this safely (bounded)</CardTitle>
@@ -1407,11 +1545,9 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                                 <span className="font-medium">Time cap:</span>{" "}
                                                                 <span className="text-muted-foreground">{deep.testPlan?.timeCap ?? "—"}</span>
                                                             </div>
-
                                                         </CardContent>
                                                     </Card>
 
-                                                    {/* 5) First move */}
                                                     <Card className="rounded-2xl border-2">
                                                         <CardHeader>
                                                             <CardTitle className="text-base">Your first real move (copy/paste)</CardTitle>
@@ -1419,7 +1555,6 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                         <CardContent className="space-y-3">
                                                             <Badge variant="outline" className="rounded-full w-fit">
                                                                 Artifact: {deep.firstMove?.type ?? "—"}
-
                                                             </Badge>
 
                                                             <div className="rounded-2xl border bg-muted/30 p-3">
@@ -1434,7 +1569,6 @@ export default function MicroNicheEngineFrontendPrototype() {
                                                         </CardContent>
                                                     </Card>
 
-                                                    {/* 6) Kill switch */}
                                                     <Card className="rounded-2xl">
                                                         <CardHeader>
                                                             <CardTitle className="text-base">Kill switch (when to stop)</CardTitle>
