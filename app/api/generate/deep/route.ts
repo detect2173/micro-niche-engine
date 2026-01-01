@@ -99,6 +99,16 @@ function firstNonEmpty(arr?: string[]): string {
     return (arr ?? []).map((x) => x.trim()).find(Boolean) ?? "";
 }
 
+async function withTimeout<T>(p: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+    const timeout = new Promise<T>((_, reject) => {
+        const id = setTimeout(() => {
+            clearTimeout(id);
+            reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+    });
+    return (await Promise.race([p, timeout])) as T;
+}
+
 /** -----------------------------
  * Route
  * ----------------------------- */
@@ -118,8 +128,16 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: "Missing/invalid instant payload." }, { status: 400 });
     }
 
-    // Enforce paywall
-    const pass = await verifyDeepProofPass(sessionId);
+    // Enforce paywall (hard timeout so we never “hang”)
+    let pass: Awaited<ReturnType<typeof verifyDeepProofPass>>;
+    try {
+        // Keep this well under your frontend 45s cap.
+        pass = await withTimeout(verifyDeepProofPass(sessionId), 8000, "Pass verification");
+    } catch (e) {
+        const msg = e instanceof Error ? e.message : "Pass verification failed.";
+        return NextResponse.json({ error: msg }, { status: 504 });
+    }
+
     if (!pass.ok) {
         return NextResponse.json({ error: pass.reason ?? "Locked or expired." }, { status: 402 });
     }
