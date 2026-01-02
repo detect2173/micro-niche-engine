@@ -1,23 +1,27 @@
 // app/api/stripe/pass.ts
 
-type PassOk = {
-    ok: true;
-    passExpiresAt: number; // ms epoch
-    secondsRemaining: number;
-};
+export type DeepPassResult =
+    | { ok: true; passExpiresAt: number; secondsRemaining: number }
+    | { ok: false; reason: string };
 
-type PassFail = {
-    ok: false;
-    reason: string;
-};
-
-export type DeepPassResult = PassOk | PassFail;
-
-// Tiny in-memory cache (per-worker instance). Good enough for now.
 const cache = new Map<string, { value: DeepPassResult; expiresAt: number }>();
 
 function nowMs() {
     return Date.now();
+}
+
+function cacheGet(k: string): DeepPassResult | null {
+    const v = cache.get(k);
+    if (!v) return null;
+    if (nowMs() > v.expiresAt) {
+        cache.delete(k);
+        return null;
+    }
+    return v.value;
+}
+
+function cacheSet(k: string, value: DeepPassResult, ttlMs: number) {
+    cache.set(k, { value, expiresAt: nowMs() + ttlMs });
 }
 
 function clampSeconds(s: number) {
@@ -30,105 +34,85 @@ function getPassHours(): number {
     return Number.isFinite(n) && n > 0 ? n : 24;
 }
 
-function cacheGet(sessionId: string): DeepPassResult | null {
-    const item = cache.get(sessionId);
-    if (!item) return null;
-    if (nowMs() > item.expiresAt) {
-        cache.delete(sessionId);
-        return null;
-    }
-    return item.value;
-}
-
-function cacheSet(sessionId: string, value: DeepPassResult, ttlMs: number) {
-    cache.set(sessionId, { value, expiresAt: nowMs() + ttlMs });
-}
-
-async function stripeGetCheckoutSession(sessionId: string) {
-    const secret = (process.env.STRIPE_SECRET_KEY ?? "").trim();
-    if (!secret) {
-        throw new Error("Missing STRIPE_SECRET_KEY");
-    }
-
-    // Stripe REST: GET /v1/checkout/sessions/{id}
-    const url = `https://api.stripe.com/v1/checkout/sessions/${encodeURIComponent(sessionId)}`;
-
-    const res = await fetch(url, {
-        method: "GET",
-        headers: {
-            Authorization: `Bearer ${secret}`,
-        },
-        // Hard timeout so it never “hangs”
-        signal: AbortSignal.timeout(7000),
-    });
-
-    const text = await res.text();
-
-    let json: any = null;
-    try {
-        json = JSON.parse(text);
-    } catch {
-        // keep null; handled below
-    }
-
-    if (!res.ok) {
-        const msg =
-            (json && typeof json.error?.message === "string" && json.error.message) ||
-            `Stripe request failed (${res.status})`;
-        throw new Error(msg);
-    }
-
-    return json;
-}
-
 /**
  * verifyDeepProofPass
- * - sessionId must be a valid Stripe Checkout Session id
- * - Must be paid
- * - Pass expires DEEP_PASS_HOURS after session.created (or now if missing)
+ * Uses the SAME truth source as your frontend (verify-session),
+ * then layers the "expires in N hours" rule on top.
  */
 export async function verifyDeepProofPass(sessionId: string): Promise<DeepPassResult> {
-    const id = (sessionId ?? "").trim();
-    if (!id) return { ok: false, reason: "Missing session id." };
+    const sid = (sessionId ?? "").trim();
+    if (!sid) return { ok: false, reason: "Missing session id." };
 
-    // Cache hit (60s)
-    const cached = cacheGet(id);
+    // cache (60s)
+    const cached = cacheGet(sid);
     if (cached) return cached;
 
-    let session: any;
+    // We need an absolute URL server-side. Use APP_URL / NEXT_PUBLIC_APP_URL if present.
+    const base =
+        (process.env.NEXT_PUBLIC_APP_URL ?? process.env.APP_URL ?? "").trim().replace(/\/+$/, "");
+
+    if (!base) {
+        const out: DeepPassResult = { ok: false, reason: "Missing APP_URL/NEXT_PUBLIC_APP_URL for server verification." };
+        cacheSet(sid, out, 15_000);
+        return out;
+    }
+
+    let payload: any = null;
     try {
-        session = await stripeGetCheckoutSession(id);
+        const r = await fetch(
+            `${base}/api/stripe/verify-session?session_id=${encodeURIComponent(sid)}`,
+            { method: "GET", signal: AbortSignal.timeout(7000) }
+        );
+        const txt = await r.text();
+        try {
+            payload = JSON.parse(txt);
+        } catch {
+            payload = null;
+        }
+
+        if (!r.ok) {
+            const msg =
+                (payload && (payload.error || payload.message)) ||
+                `verify-session failed (${r.status})`;
+            const out: DeepPassResult = { ok: false, reason: String(msg) };
+            cacheSet(sid, out, 15_000);
+            return out;
+        }
     } catch (e) {
-        const msg = e instanceof Error ? e.message : "Stripe verification failed.";
+        const msg = e instanceof Error ? e.message : "verify-session request failed.";
         const out: DeepPassResult = { ok: false, reason: msg };
-        cacheSet(id, out, 15_000); // short negative cache
+        cacheSet(sid, out, 15_000);
         return out;
     }
 
-    const paymentStatus = typeof session?.payment_status === "string" ? session.payment_status : "";
-    if (paymentStatus !== "paid") {
+    const paid = !!payload?.paid;
+    if (!paid) {
         const out: DeepPassResult = { ok: false, reason: "Payment not completed." };
-        cacheSet(id, out, 30_000);
+        cacheSet(sid, out, 30_000);
         return out;
     }
 
+    // If verify-session already returns secondsRemaining/passExpiresAt, prefer it.
+    // Otherwise apply our own window based on "now".
     const passHours = getPassHours();
 
-    // Stripe session.created is seconds since epoch
-    const createdSec =
-        typeof session?.created === "number" ? session.created : Math.floor(Date.now() / 1000);
-    const createdMs = createdSec * 1000;
+    const passExpiresAt =
+        typeof payload?.passExpiresAt === "number"
+            ? payload.passExpiresAt
+            : nowMs() + passHours * 60 * 60 * 1000;
 
-    const passExpiresAt = createdMs + passHours * 60 * 60 * 1000;
-    const secondsRemaining = clampSeconds((passExpiresAt - nowMs()) / 1000);
+    const secondsRemaining =
+        typeof payload?.secondsRemaining === "number"
+            ? clampSeconds(payload.secondsRemaining)
+            : clampSeconds((passExpiresAt - nowMs()) / 1000);
 
     if (secondsRemaining <= 0) {
         const out: DeepPassResult = { ok: false, reason: "Pass expired." };
-        cacheSet(id, out, 30_000);
+        cacheSet(sid, out, 30_000);
         return out;
     }
 
     const ok: DeepPassResult = { ok: true, passExpiresAt, secondsRemaining };
-    cacheSet(id, ok, 60_000);
+    cacheSet(sid, ok, 60_000);
     return ok;
 }
