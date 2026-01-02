@@ -1,5 +1,4 @@
 // app/api/stripe/pass.ts
-import { stripe } from "@/lib/mne/stripe";
 
 type PassOk = {
     ok: true;
@@ -15,10 +14,7 @@ type PassFail = {
 export type DeepPassResult = PassOk | PassFail;
 
 // Tiny in-memory cache (per-worker instance). Good enough for now.
-const cache = new Map<
-    string,
-    { value: DeepPassResult; cachedAt: number; expiresAt: number }
->();
+const cache = new Map<string, { value: DeepPassResult; expiresAt: number }>();
 
 function nowMs() {
     return Date.now();
@@ -45,28 +41,44 @@ function cacheGet(sessionId: string): DeepPassResult | null {
 }
 
 function cacheSet(sessionId: string, value: DeepPassResult, ttlMs: number) {
-    cache.set(sessionId, {
-        value,
-        cachedAt: nowMs(),
-        expiresAt: nowMs() + ttlMs,
-    });
+    cache.set(sessionId, { value, expiresAt: nowMs() + ttlMs });
 }
 
-async function stripeRetrieveCheckoutSession(sessionId: string) {
-    // Stripe node SDK can hang under some edgey network conditions; we ensure a hard timeout.
-    // We still use stripe SDK here, but wrapped with AbortSignal.timeout via fetch override in your stripe client
-    // IF your stripe client is configured that way. If not, this Promise.race below still prevents “hang”.
-    const p = stripe.checkout.sessions.retrieve(sessionId);
-    const timeoutMs = 7000;
+async function stripeGetCheckoutSession(sessionId: string) {
+    const secret = (process.env.STRIPE_SECRET_KEY ?? "").trim();
+    if (!secret) {
+        throw new Error("Missing STRIPE_SECRET_KEY");
+    }
 
-    const t = new Promise<never>((_, reject) => {
-        const id = setTimeout(() => {
-            clearTimeout(id);
-            reject(new Error(`Stripe retrieve timed out after ${timeoutMs}ms`));
-        }, timeoutMs);
+    // Stripe REST: GET /v1/checkout/sessions/{id}
+    const url = `https://api.stripe.com/v1/checkout/sessions/${encodeURIComponent(sessionId)}`;
+
+    const res = await fetch(url, {
+        method: "GET",
+        headers: {
+            Authorization: `Bearer ${secret}`,
+        },
+        // Hard timeout so it never “hangs”
+        signal: AbortSignal.timeout(7000),
     });
 
-    return (await Promise.race([p, t])) as Awaited<typeof p>;
+    const text = await res.text();
+
+    let json: any = null;
+    try {
+        json = JSON.parse(text);
+    } catch {
+        // keep null; handled below
+    }
+
+    if (!res.ok) {
+        const msg =
+            (json && typeof json.error?.message === "string" && json.error.message) ||
+            `Stripe request failed (${res.status})`;
+        throw new Error(msg);
+    }
+
+    return json;
 }
 
 /**
@@ -85,7 +97,7 @@ export async function verifyDeepProofPass(sessionId: string): Promise<DeepPassRe
 
     let session: any;
     try {
-        session = await stripeRetrieveCheckoutSession(id);
+        session = await stripeGetCheckoutSession(id);
     } catch (e) {
         const msg = e instanceof Error ? e.message : "Stripe verification failed.";
         const out: DeepPassResult = { ok: false, reason: msg };
@@ -93,7 +105,6 @@ export async function verifyDeepProofPass(sessionId: string): Promise<DeepPassRe
         return out;
     }
 
-    // Stripe checkout session "payment_status" should be "paid" for completed purchases
     const paymentStatus = typeof session?.payment_status === "string" ? session.payment_status : "";
     if (paymentStatus !== "paid") {
         const out: DeepPassResult = { ok: false, reason: "Payment not completed." };
@@ -104,7 +115,8 @@ export async function verifyDeepProofPass(sessionId: string): Promise<DeepPassRe
     const passHours = getPassHours();
 
     // Stripe session.created is seconds since epoch
-    const createdSec = typeof session?.created === "number" ? session.created : Math.floor(Date.now() / 1000);
+    const createdSec =
+        typeof session?.created === "number" ? session.created : Math.floor(Date.now() / 1000);
     const createdMs = createdSec * 1000;
 
     const passExpiresAt = createdMs + passHours * 60 * 60 * 1000;
